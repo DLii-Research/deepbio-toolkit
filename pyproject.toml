@@ -1,0 +1,20 @@
+[project]
+name = "deep-dna-2"
+version = "0.0.2"
+authors = [
+  { name="David W. Ludwig II", email="davidludwigii@gmail.com" }
+]
+description = "Deep learning models for handling DNA sequences and high-throughput sequencing samples."
+readme = "README.md"
+license = { file="LICENSE" }
+requires-python = ">=3.9"
+dependencies = [
+  "wandb >= 0.17.3"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/DLii-Research/deep-dna"
+"Bug Tracker" = "https://github.com/DLii-Research/deep-dna/issues"
+
+[tool.ruff]
+line-length = 100
