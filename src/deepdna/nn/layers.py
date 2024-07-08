@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import cast, Sequence, Optional, Union
+from typing import Any, Callable, cast, List, Optional, Sequence, Tuple, Union
 
 # Multi-head Attention Mechanisms ------------------------------------------------------------------
 
@@ -38,8 +38,8 @@ class MultiHeadAttention(nn.Module):
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        key_padding_mask: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        key_padding_mask: Optional[torch.Tensor] = None,
         attention_head_mask: Optional[torch.Tensor] = None,
         average_attention_weights: bool = True,
         return_attention_weights: bool = False
@@ -62,7 +62,7 @@ class MultiHeadAttention(nn.Module):
         attention_weights = self.dropout(attention_weights)
 
         attention = torch.matmul(attention_weights, v) # [..., h, n_q, d_k]
-        attention = attention.transpose(-2, -3).reshape((*extra_dims_v, n_q, -1)) # [..., n_q, embed_dim]
+        attention = attention.transpose(-2, -3).reshape((*extra_dims_v, n_q, self.num_heads*self.head_embed_dim)) # [..., n_q, d_k*num_heads]
         output = self.w_output(attention)
 
         if return_attention_weights:
@@ -78,7 +78,8 @@ class MultiHeadAttention(nn.Module):
         key_padding_mask: Optional[torch.Tensor]
     ) -> Union[torch.Tensor, None]:
         if key_padding_mask is not None:
-            key_padding_mask = torch.repeat_interleave(key_padding_mask.unsqueeze(-2), key_padding_mask.shape[-1], -2) # type: ignore
+            key_padding_mask = key_padding_mask.unsqueeze(-2)
+            # key_padding_mask = torch.repeat_interleave(key_padding_mask.unsqueeze(-2), key_padding_mask.shape[-1], -2) # type: ignore
         if attention_mask is None:
             return key_padding_mask
         if key_padding_mask is None:
@@ -106,25 +107,33 @@ class RelativeMultiHeadAttention(MultiHeadAttention):
         self,
         embed_dim: int,
         num_heads: int,
-        max_length: int,
+        max_distance: int,
         dropout=0.0,
         bias=True,
         head_embed_dim: Optional[int] = None,
     ):
         super().__init__(embed_dim, num_heads, dropout, bias, head_embed_dim)
-        self.max_length = max_length
-        self.Er = nn.Parameter(torch.randn(max_length, self.head_embed_dim))
+        self.max_distance = max_distance
+        self.embeddings = nn.Parameter(torch.randn(self.head_embed_dim, 2*max_distance - 1)) # (dxn)
 
-    def _skew(self, QEr):
-        # QEr.shape = (batch_size, num_heads, seq_len, seq_len)
-        padded = F.pad(QEr, (1, 0))
-        # padded.shape = (batch_size, num_heads, seq_len, 1 + seq_len)
-        *dims, num_rows, num_cols = padded.shape
-        reshaped = padded.reshape(*dims, num_cols, num_rows)
-        # reshaped.size = (batch_size, num_heads, 1 + seq_len, seq_len)
-        s_rel = reshaped[(slice(None, None, None),)*len(dims) + (slice(1, None, None), slice(None, None))]
-        # Srel.shape = (batch_size, num_heads, seq_len, seq_len)
-        return s_rel
+    def _nd_replication_pad(self, x, padding):
+        extra_dims = x.shape[:-2]
+        x = x.view(-1, *x.shape[-2:])
+        x = F.pad(x, padding, mode="replicate")
+        return x.view(*extra_dims, *x.shape[-2:])
+
+    def _skew(self, x, n):
+        """
+        Perform matrix ops to rearange the matrix so that cells
+        contain the correct comparisons.
+        """
+        size = x.shape[-2]
+        n_rel = 2*n - 1
+        x = self._nd_replication_pad(x, (n - self.max_distance, n - self.max_distance + 1))
+        x = x.flatten(-2)
+        x = F.pad(x, (0, n_rel*size - x.shape[-1]))
+        x = x.unflatten(-1, (size, n_rel))
+        return x.narrow(-1, n - 1, n)
 
     def compute_attention_weights(
         self,
@@ -133,16 +142,10 @@ class RelativeMultiHeadAttention(MultiHeadAttention):
         attention_mask: Optional[torch.Tensor],
         attention_head_mask: Optional[torch.Tensor]
     ):
-        start = self.max_length - query.size(-2)
-        Er_t = self.Er[start:, :].transpose(0, 1)
-        # Er_t.shape = (d_head, seq_len)
-        QEr = torch.matmul(query, Er_t)
-        # QEr.shape = (batch_size, num_heads, seq_len, seq_len)
-        Srel = self._skew(QEr)
-        # Srel.shape = (batch_size, num_heads, seq_len, seq_len)
-        QK_t = torch.matmul(query, key.transpose(-2, -1))
-        # QK_t.shape = (batch_size, num_heads, seq_len, seq_len)
-        attention_weights = (QK_t + Srel) / np.sqrt(self.head_embed_dim)
+        att_qk = torch.matmul(query, key.transpose(-2, -1))
+        att_qrel = self._skew(torch.matmul(query, self.embeddings), key.shape[-2])
+        att_krel = self._skew(torch.matmul(key, self.embeddings.flip(-1)), query.shape[-2]).transpose(-1, -2)
+        attention_weights = (att_qk + att_qrel + att_krel) / np.sqrt(self.head_embed_dim)
         if attention_mask is not None:
             attention_weights = attention_weights.masked_fill(attention_mask.unsqueeze(-3), float("-inf"))
         attention_weights = F.softmax(attention_weights, dim=-1) # [..., h, n_q, n_k]
@@ -150,19 +153,14 @@ class RelativeMultiHeadAttention(MultiHeadAttention):
             attention_weights = attention_weights * attention_head_mask.view((-1, 1, 1))
         return attention_weights
 
-"""
-TransformerEncoderBlock, MultiHeadAttentionBlock, SetAttentionBlock
-InducedSetAttentionBlock
-PoolingByMultiHeadAttention
-InducedSetEncoder
-"""
+# Transformer Generics -----------------------------------------------------------------------------
 
-class TransformerEncoderBlock(abc.ABC, nn.Module):
+class MultiHeadAttentionBlock(nn.Module):
     def __init__(
         self,
         mha: MultiHeadAttention,
         feedforward_dim: int,
-        feedforward_activation: Optional[nn.Module] = nn.GELU(),
+        feedforward_activation: Union[nn.Module, Callable] = F.gelu,
         norm_first: bool = True,
         dropout: float = 0.1,
     ):
@@ -175,14 +173,91 @@ class TransformerEncoderBlock(abc.ABC, nn.Module):
         self.norm1 = nn.LayerNorm(mha.embed_dim)
         self.norm2 = nn.LayerNorm(mha.embed_dim)
 
-        self.feedforward = nn.Sequential(*(x for x in [
-                nn.Linear(mha.embed_dim, self.feedforward_dim),
-                self.feedforward_activation,
-                nn.Linear(self.feedforward_dim, mha.embed_dim),
-                nn.Dropout(dropout)
-            ] if x is not None
-        ))
+        self.feedforward_linear1 = nn.Linear(mha.embed_dim, feedforward_dim)
+        self.feedforward_linear2 = nn.Linear(feedforward_dim, mha.embed_dim)
 
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+
+    def _cross_attention_block(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        key_padding_mask: Optional[torch.Tensor],
+        attention_head_mask: Optional[torch.Tensor],
+        average_attention_weights: bool,
+        return_attention_weights: bool
+    ):
+        attention_output = self.mha(
+            x,
+            y,
+            y,
+            attention_mask=attention_mask,
+            key_padding_mask=key_padding_mask,
+            attention_head_mask=attention_head_mask,
+            average_attention_weights=average_attention_weights,
+            return_attention_weights=return_attention_weights)
+        if isinstance(attention_output, tuple):
+            attention_output, *extra = attention_output
+        else:
+            extra = None
+        return self.dropout1(attention_output), extra
+
+    def _feedforward_block(self, x: torch.Tensor):
+        return self.dropout2(
+            self.feedforward_linear2(self.feedforward_activation(self.feedforward_linear1(x)))
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        key_padding_mask: Optional[torch.Tensor] = None,
+        attention_head_mask: Optional[torch.Tensor] = None,
+        average_attention_weights: bool = True,
+        return_attention_weights: bool = False
+    ):
+        if self.norm_first:
+            if x is y:
+                x_norm = y_norm = self.norm1(x)
+            else:
+                x_norm = self.norm1(x)
+                y_norm = self.norm1(y)
+            attention_output, extra_output = self._cross_attention_block(
+                x_norm,
+                y_norm,
+                attention_mask,
+                key_padding_mask,
+                attention_head_mask,
+                average_attention_weights,
+                return_attention_weights)
+            x = x + attention_output
+            x = x + self._feedforward_block(self.norm2(x))
+        else:
+            attention_output, extra_output = self._cross_attention_block(
+                x,
+                y,
+                attention_mask,
+                key_padding_mask,
+                attention_head_mask,
+                average_attention_weights,
+                return_attention_weights)
+            x = self.norm1(x + attention_output)
+            x = self.norm2(x + self._feedforward_block(x))
+            return x, extra_output
+        if extra_output is not None:
+            return x, *extra_output
+        return x
+
+# Transformer Encoders -----------------------------------------------------------------------------
+
+class ITransformerEncoderBlock(abc.ABC):
+    """
+    The interface for a transformer encoder block.
+    """
+    @abc.abstractmethod
     def forward(
         self,
         src: torch.Tensor,
@@ -191,52 +266,37 @@ class TransformerEncoderBlock(abc.ABC, nn.Module):
         average_attention_weights: bool = True,
         return_attention_weights: bool = False
     ):
-        if self.norm_first:
-            src_norm = self.norm1(src)
-            attention_output, *extra_out = self.mha(
-                src_norm,
-                src_norm,
-                src_norm,
-                key_padding_mask=src_key_padding_mask,
-                attention_mask=attention_mask,
-                average_attention_weights=average_attention_weights,
-                return_attention_weights=return_attention_weights)
-            src = src + attention_output
-            output = src + self.feedforward(self.norm2(src))
-        else:
-            attention_output, *extra_out = self.mha(
-                src,
-                src,
-                src,
-                attention_mask=attention_mask,
-                key_padding_mask=src_key_padding_mask,
-                attention_head_mask=None,
-                average_attention_weights=average_attention_weights,
-                return_attention_weights=return_attention_weights)
-            src = self.norm1(src + attention_output)
-            output = self.norm2(src + self.feedforward(src))
-        if len(extra_out) > 0:
-            return output, *extra_out
-        return output
+        return NotImplemented
 
 
-class TransformerDecoderBlock(abc.ABC, nn.Module):
+class TransformerEncoderBlock(MultiHeadAttentionBlock, ITransformerEncoderBlock):
     def __init__(
         self,
         mha: MultiHeadAttention,
-        norm_first: bool = True
+        feedforward_dim: int,
+        feedforward_activation: Union[nn.Module, Callable] = nn.GELU(),
+        norm_first: bool = True,
+        dropout: float = 0.1,
     ):
-        super().__init__()
-        self.mha = mha
-        self.norm_first = norm_first
+        super().__init__(mha, feedforward_dim, feedforward_activation, norm_first, dropout)
+        self.attention_head_mask = nn.Parameter(torch.ones(mha.num_heads), requires_grad=False)
 
-    @abc.abstractmethod
     def forward(
         self,
-        target: torch.Tensor,
-        memory: torch.Tensor
+        src: torch.Tensor,
+        src_mask: Optional[torch.Tensor] = None,
+        src_key_padding_mask: Optional[torch.Tensor] = None,
+        average_attention_weights: bool = True,
+        return_attention_weights: bool = False
     ):
-        return NotImplemented
+        return super().forward(
+            x=src,
+            y=src,
+            attention_mask=src_mask,
+            key_padding_mask=src_key_padding_mask,
+            attention_head_mask=self.attention_head_mask,
+            average_attention_weights=average_attention_weights,
+            return_attention_weights=return_attention_weights)
 
 
 class TransformerEncoder(nn.Module):
@@ -247,26 +307,298 @@ class TransformerEncoder(nn.Module):
     def forward(
         self,
         src: torch.Tensor,
+        src_mask: Optional[torch.Tensor] = None,
         src_key_padding_mask: Optional[torch.Tensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
         average_attention_weights: bool = True,
         return_attention_weights: bool = False
     ):
-        attention_weights = [] if return_attention_weights else None
+        extra_outputs = []
         output = src
         for layer in cast(Sequence[TransformerEncoderBlock], self.layers):
-            output, *extra_outputs = layer(
+            output = layer(
                 output,
+                src_mask=src_mask,
                 src_key_padding_mask=src_key_padding_mask,
-                attention_mask=attention_mask,
                 average_attention_weights=average_attention_weights,
                 return_attention_weights=return_attention_weights)
-            extra_outputs = iter(extra_outputs)
-            if attention_weights is not None:
-                attention_weights.append(next(extra_outputs))
-        output = (output,)
-        if attention_weights is not None:
-            output += (torch.stack(attention_weights),)
-        if len(output) == 1:
-            return output[0]
+            if isinstance(output, tuple):
+                output, *extra_output = output
+                if len(extra_output) > 0:
+                    extra_outputs.append(extra_output)
+        if len(extra_outputs) > 0:
+            return output, *zip(*extra_outputs)
         return output
+
+
+class InducedSetAttentionBlock(ITransformerEncoderBlock, nn.Module):
+    def __init__(
+        self,
+        mha: MultiHeadAttention,
+        num_inducing_points: int,
+        feedforward_dim: int,
+        feedforward_activation: Union[nn.Module, Callable] = F.gelu,
+        norm_first: bool = True,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.num_inducing_points = num_inducing_points
+        self.inducing_points = nn.Parameter(torch.randn(num_inducing_points, mha.embed_dim))
+        self.mab1 = MultiHeadAttentionBlock(copy.deepcopy(mha), feedforward_dim, feedforward_activation, norm_first, dropout)
+        self.mab2 = MultiHeadAttentionBlock(copy.deepcopy(mha), feedforward_dim, feedforward_activation, norm_first, dropout)
+
+    def forward(
+        self,
+        src: torch.Tensor,
+        src_mask: Optional[torch.Tensor] = None,
+        src_key_padding_mask: Optional[torch.Tensor] = None,
+        average_attention_weights: bool = True,
+        return_attention_weights: bool = False
+    ):
+        if src_mask is not None:
+            raise Exception("Attention mask not supported for InducedSetAttentionBlock.")
+        i = self.inducing_points.unsqueeze(-3).expand(*src.shape[:-2], -1, -1)
+        h = self.mab1(i, src, key_padding_mask=src_key_padding_mask)
+        return self.mab2(src, h, average_attention_weights=average_attention_weights, return_attention_weights=return_attention_weights)
+
+# Transformer Decoders -----------------------------------------------------------------------------
+
+class ITransformerDecoderBlock(abc.ABC):
+    """
+    The interface for a transformer encoder block.
+    """
+    @abc.abstractmethod
+    def forward(
+        self,
+        target: torch.Tensor,
+        memory: torch.Tensor,
+        target_mask: Optional[torch.Tensor] = None,
+        memory_mask: Optional[torch.Tensor] = None,
+        target_key_padding_mask: Optional[torch.Tensor] = None,
+        memory_key_padding_mask: Optional[torch.Tensor] = None,
+        average_attention_weights: bool = True,
+        return_attention_weights: bool = False
+    ):
+        return NotImplemented
+
+
+class TransformerDecoderBlock(ITransformerEncoderBlock, nn.Module):
+
+    def __init__(
+        self,
+        mha: MultiHeadAttention,
+        feedforward_dim: int,
+        feedforward_activation: Union[nn.Module, Callable] = F.gelu,
+        norm_first: bool = True,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.self_mha = copy.deepcopy(mha)
+        self.cross_mha = copy.deepcopy(mha)
+        self.feedforward_dim = feedforward_dim
+        self.feedforward_activation = feedforward_activation
+        self.norm_first = norm_first
+
+        self.norm1 = nn.LayerNorm(self.self_mha.embed_dim)
+        self.norm2 = nn.LayerNorm(self.self_mha.embed_dim)
+        self.norm3 = nn.LayerNorm(self.self_mha.embed_dim)
+
+        self.feedforward_linear1 = nn.Linear(self.self_mha.embed_dim, feedforward_dim)
+        self.feedforward_linear2 = nn.Linear(feedforward_dim, self.self_mha.embed_dim)
+
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.dropout3 = nn.Dropout(dropout)
+
+    def _self_attention_block(
+        self,
+        target: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        key_padding_mask: Optional[torch.Tensor],
+        average_attention_weights: bool,
+        return_attention_weights: bool
+    ) -> Tuple[torch.Tensor, Optional[List[Any]]]:
+        attention_output = self.self_mha(
+            target,
+            target,
+            target,
+            attention_mask=attention_mask,
+            key_padding_mask=key_padding_mask,
+            average_attention_weights=average_attention_weights,
+            return_attention_weights=return_attention_weights)
+        if isinstance(attention_output, tuple):
+            attention_output, *extra = attention_output
+        else:
+            extra = None
+        return self.dropout1(attention_output), extra
+
+    def _cross_attention_block(
+        self,
+        target: torch.Tensor,
+        memory: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        key_padding_mask: Optional[torch.Tensor],
+        average_attention_weights: bool,
+        return_attention_weights: bool
+    ) -> Tuple[torch.Tensor, Optional[List[Any]]]:
+        attention_output = self.cross_mha(
+            target,
+            memory,
+            memory,
+            attention_mask=attention_mask,
+            key_padding_mask=key_padding_mask,
+            average_attention_weights=average_attention_weights,
+            return_attention_weights=return_attention_weights)
+        if isinstance(attention_output, tuple):
+            attention_output, *extra = attention_output
+        else:
+            extra = None
+        return self.dropout2(attention_output), extra
+
+    def _feedforward_block(self, x: torch.Tensor):
+        return self.dropout3(
+            self.feedforward_linear2(self.feedforward_activation(self.feedforward_linear1(x)))
+        )
+
+    def forward(
+        self,
+        target: torch.Tensor,
+        memory: torch.Tensor,
+        target_mask: Optional[torch.Tensor] = None,
+        memory_mask: Optional[torch.Tensor] = None,
+        target_key_padding_mask: Optional[torch.Tensor] = None,
+        memory_key_padding_mask: Optional[torch.Tensor] = None,
+        average_attention_weights: bool = True,
+        return_attention_weights: bool = False
+    ):
+        x = target
+        if self.norm_first:
+            attention_output, extra_output_sa = self._self_attention_block(
+                self.norm1(x),
+                target_mask,
+                target_key_padding_mask,
+                average_attention_weights,
+                return_attention_weights)
+            x = x + attention_output
+            attention_output, extra_output_ca = self._cross_attention_block(
+                self.norm2(x),
+                memory,
+                memory_mask,
+                memory_key_padding_mask,
+                average_attention_weights,
+                return_attention_weights)
+            x = x + attention_output
+            x = x + self._feedforward_block(self.norm3(x))
+        else:
+            attention_output, extra_output_sa = self._self_attention_block(
+                x,
+                target_mask,
+                target_key_padding_mask,
+                average_attention_weights,
+                return_attention_weights)
+            x = self.norm1(x + attention_output)
+            attention_output, extra_output_ca = self._cross_attention_block(
+                x,
+                memory,
+                memory_mask,
+                memory_key_padding_mask,
+                average_attention_weights,
+                return_attention_weights)
+            x = self.norm2(x + attention_output)
+            x = self.norm3(x + self._feedforward_block(x))
+        extra_output = ()
+        if extra_output_sa is not None:
+            extra_output += tuple(extra_output_sa)
+        if extra_output_ca is not None:
+            extra_output += tuple(extra_output_ca)
+        if len(extra_output) > 0:
+            return x, *extra_output
+        return x
+
+
+class TransformerDecoder(nn.Module):
+    def __init__(self, decoder_layer: TransformerDecoderBlock, num_layers: int):
+        super().__init__()
+        self.layers = nn.ModuleList([copy.deepcopy(decoder_layer) for _ in range(num_layers)])
+
+    def forward(
+        self,
+        target: torch.Tensor,
+        memory: torch.Tensor,
+        target_mask: Optional[torch.Tensor] = None,
+        memory_mask: Optional[torch.Tensor] = None,
+        target_key_padding_mask: Optional[torch.Tensor] = None,
+        memory_key_padding_mask: Optional[torch.Tensor] = None,
+        average_attention_weights: bool = True,
+        return_attention_weights: bool = False
+    ):
+        extra_outputs = []
+        output = target
+        for layer in cast(Sequence[TransformerDecoderBlock], self.layers):
+            output = layer(
+                target=output,
+                memory=memory,
+                target_mask=target_mask,
+                memory_mask=memory_mask,
+                target_key_padding_mask=target_key_padding_mask,
+                memory_key_padding_mask=memory_key_padding_mask,
+                average_attention_weights=average_attention_weights,
+                return_attention_weights=return_attention_weights)
+            if isinstance(output, tuple):
+                output, *extra_output = output
+                if len(extra_output) > 0:
+                    extra_outputs.append(extra_output)
+        if len(extra_outputs) > 0:
+            return output, *zip(*extra_outputs)
+        return output
+
+
+class ConditionedInducedSetAttentionBlock(TransformerDecoderBlock):
+    def __init__(
+        self,
+        mha: MultiHeadAttention,
+        num_inducing_points: int,
+        feedforward_dim: int,
+        feedforward_activation: Union[nn.Module, Callable] = F.gelu,
+        norm_first: bool = True,
+        dropout: float = 0.1,
+    ):
+        super().__init__(mha, feedforward_dim, feedforward_activation, norm_first, dropout)
+        self.num_inducing_points = num_inducing_points
+        self.inducing_point_predictor = nn.Linear(mha.embed_dim, mha.embed_dim*num_inducing_points)
+        self.mab1 = MultiHeadAttentionBlock(copy.deepcopy(mha), feedforward_dim, feedforward_activation, norm_first, dropout)
+        self.mab2 = MultiHeadAttentionBlock(copy.deepcopy(mha), feedforward_dim, feedforward_activation, norm_first, dropout)
+
+    def forward(
+        self,
+        target: torch.Tensor,
+        memory: torch.Tensor,
+        target_mask: Optional[torch.Tensor] = None,
+        memory_mask: Optional[torch.Tensor] = None,
+        target_key_padding_mask: Optional[torch.Tensor] = None,
+        memory_key_padding_mask: Optional[torch.Tensor] = None,
+        average_attention_weights: bool = True,
+        return_attention_weights: bool = False
+    ):
+        if target_mask is not None:
+            raise Exception(f"target_mask not supported for {self.__class__}")
+        if memory_mask is not None:
+            raise Exception(f"memory_mask not supported for {self.__class__}")
+        if memory_key_padding_mask is not None:
+            raise Exception(f"Memory key padding mask not supported for {self.__class__}")
+        i = self.inducing_point_predictor(memory).view(*memory.shape[:-1], self.num_inducing_points, -1)
+        h = self.mab1(i, target, attention_mask=target_key_padding_mask)
+        return self.mab2(target, h, average_attention_weights=average_attention_weights, return_attention_weights=return_attention_weights)
+
+# Miscellaneous
+
+class SampleSet(nn.Module):
+    def __init__(self, embed_dim: int, max_set_size: int):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.max_set_size = max_set_size
+        self.mu = nn.Parameter(torch.randn(max_set_size, embed_dim))
+        self.sigma = nn.Parameter(torch.abs(torch.randn(max_set_size, embed_dim)))
+
+    def forward(self, n: torch.Tensor, masked: bool = False):
+        batch_size = n.size(0)
+        torch.randperm()
