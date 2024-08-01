@@ -265,7 +265,7 @@ class MultiHeadAttentionBlock(L.LightningModule):
 
 # Transformer Encoders -----------------------------------------------------------------------------
 
-class ITransformerEncoderBlock(abc.ABC):
+class ITransformerEncoder(abc.ABC, L.LightningModule):
     """
     The interface for a transformer encoder block.
     """
@@ -287,7 +287,7 @@ class ITransformerEncoderBlock(abc.ABC):
         return NotImplemented
 
 @export
-class TransformerEncoderBlock(ITransformerEncoderBlock, L.LightningModule):
+class TransformerEncoderBlock(ITransformerEncoder, L.LightningModule):
     def __init__(
         self,
         mha: MultiHeadAttention,
@@ -331,7 +331,7 @@ class TransformerEncoderBlock(ITransformerEncoderBlock, L.LightningModule):
 
 
 @export
-class InducedSetAttentionBlock(ITransformerEncoderBlock, L.LightningModule):
+class InducedSetAttentionBlock(ITransformerEncoder, L.LightningModule):
     def __init__(
         self,
         mha: MultiHeadAttention,
@@ -373,8 +373,8 @@ class InducedSetAttentionBlock(ITransformerEncoderBlock, L.LightningModule):
 
 
 @export
-class TransformerEncoder(L.LightningModule):
-    def __init__(self, encoder_layer: TransformerEncoderBlock, num_layers: int):
+class TransformerEncoder(ITransformerEncoder, L.LightningModule):
+    def __init__(self, encoder_layer: ITransformerEncoder, num_layers: int):
         super().__init__()
         self.layers = nn.ModuleList([copy.deepcopy(encoder_layer) for _ in range(num_layers)])
 
@@ -383,16 +383,18 @@ class TransformerEncoder(L.LightningModule):
         src: torch.Tensor,
         src_mask: Optional[torch.Tensor] = None,
         src_key_padding_mask: Optional[torch.Tensor] = None,
+        attention_head_mask: Optional[torch.Tensor] = None,
         average_attention_weights: bool = True,
         return_attention_weights: bool = False
     ):
         extra_outputs = []
         output = src
-        for layer in cast(Sequence[TransformerEncoderBlock], self.layers):
+        for layer in cast(Sequence[ITransformerEncoder], self.layers):
             output = layer(
                 output,
                 src_mask=src_mask,
                 src_key_padding_mask=src_key_padding_mask,
+                attention_head_mask=attention_head_mask,
                 average_attention_weights=average_attention_weights,
                 return_attention_weights=return_attention_weights)
             if isinstance(output, tuple):
@@ -412,7 +414,7 @@ class TransformerEncoder(L.LightningModule):
 
 # Transformer Decoders -----------------------------------------------------------------------------
 
-class ITransformerDecoderBlock(abc.ABC):
+class ITransformerDecoder(abc.ABC):
     """
     The interface for a transformer encoder block.
     """
@@ -432,7 +434,7 @@ class ITransformerDecoderBlock(abc.ABC):
 
 
 @export
-class TransformerDecoderBlock(ITransformerEncoderBlock, L.LightningModule):
+class TransformerDecoderBlock(ITransformerDecoder, L.LightningModule):
 
     def __init__(
         self,
@@ -567,7 +569,7 @@ class TransformerDecoderBlock(ITransformerEncoderBlock, L.LightningModule):
 
 
 @export
-class TransformerDecoder(L.LightningModule):
+class TransformerDecoder(ITransformerDecoder, L.LightningModule):
     def __init__(self, decoder_layer: TransformerDecoderBlock, num_layers: int):
         super().__init__()
         self.layers = nn.ModuleList([copy.deepcopy(decoder_layer) for _ in range(num_layers)])
