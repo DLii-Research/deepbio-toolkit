@@ -29,10 +29,10 @@ class ContrastivePretrainingModel(L.LightningModule):
         else:
             w = [nn.Linear(d, embed_dim, bias=False) for d in projection_dims] # type: ignore
         if isinstance(encoders, dict):
-            self.encoders = encoders
+            self.encoders = nn.ModuleDict(encoders)
             self.w = nn.ModuleDict(dict(zip(self.encoders.keys(), w)))
         else:
-            self.encoders = tuple(encoders)
+            self.encoders = nn.ModuleList(tuple(encoders))
             self.w = nn.ModuleList(w)
         self.embed_dim = embed_dim
         self.max_temp = max_temp
@@ -75,6 +75,9 @@ class ContrastivePretrainingModel(L.LightningModule):
 
     def test_step(self, batch):
         return self._step("test", batch)
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=1e-4)
 
 # Encoders -----------------------------------------------------------------------------------------
 
