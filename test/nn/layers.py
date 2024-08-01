@@ -48,38 +48,36 @@ class TestMultiHeadAttention(unittest.TestCase):
         self.assertEqual(layer.w_output.in_features, head_dim*num_heads)
         self.assertEqual(layer.w_output.out_features, embed_dim)
 
-    def test_merge_mask(self):
-        layer = self.factory(64, 8)
-        layer.eval()
-
+    def test_merge_mask_no_masks(self):
+        layer = self.factory(64, 8).eval()
         attention_mask = None
         key_padding_mask = None
         self.assertIsNone(layer.merge_mask(attention_mask, key_padding_mask))
 
-        torch.manual_seed(1)
+    def test_merge_mask_with_attention_mask(self):
+        layer = self.factory(64, 8).eval()
         attention_mask = torch.randint(0, 2, (2, 10, 20), dtype=torch.bool)
         key_padding_mask = None
         merged_mask = layer.merge_mask(attention_mask, key_padding_mask)
         self.assertTrue(torch.all(merged_mask == attention_mask))
 
-        torch.manual_seed(1)
+    def test_merge_mask_with_key_padding_mask(self):
+        layer = self.factory(64, 8).eval()
         attention_mask = None
         key_padding_mask = torch.randint(0, 2, (2, 20), dtype=torch.bool)
         merged_mask = layer.merge_mask(attention_mask, key_padding_mask)
         self.assertTrue(torch.all(merged_mask == key_padding_mask.unsqueeze(-2).expand(-1, 10, -1)))
 
-        torch.manual_seed(1)
+    def test_merge_mask_with_attention_and_key_padding_mask(self):
+        layer = self.factory(64, 8).eval()
         attention_mask = torch.randint(0, 2, (2, 10, 20), dtype=torch.bool)
         key_padding_mask = torch.randint(0, 2, (2, 20), dtype=torch.bool)
         merged_mask = layer.merge_mask(attention_mask, key_padding_mask)
-        self.assertTrue(torch.all(merged_mask == torch.logical_or(attention_mask, key_padding_mask.unsqueeze(-2).expand(-1, 10, -1))))
+        target = torch.logical_or(attention_mask, key_padding_mask.unsqueeze(-2).expand(-1, 10, -1))
+        self.assertTrue(torch.all(merged_mask == target))
 
-    def test_compute_attention_weights(self):
-        layer = self.factory(64, 8)
-        layer.eval()
-
-        # Test without masking
-        torch.manual_seed(1)
+    def test_compute_attention_weights_without_masking(self):
+        layer = self.factory(64, 8).eval()
         query = torch.rand(2, 10, 64)
         key = torch.rand(2, 20, 64)
         value = torch.rand(2, 20, 64)
@@ -89,8 +87,8 @@ class TestMultiHeadAttention(unittest.TestCase):
         self.assertEqual(output.shape, (2, 10, 64))
         self.assertEqual(attention_weights.shape, (2, 10, 20))
 
-        # Test with attention_mask and key_padding_mask
-        torch.manual_seed(1)
+    def test_compute_attention_weights_with_attention_mask(self):
+        layer = self.factory(64, 8).eval()
         query = torch.rand(2, 10, 64)
         key = torch.rand(2, 20, 64)
         value = torch.rand(2, 20, 64)
@@ -102,8 +100,8 @@ class TestMultiHeadAttention(unittest.TestCase):
         self.assertEqual(attention_weights.shape, (2, 10, 20))
         self.assertTrue(torch.all(attention_weights[torch.where(mask)] == 0.0))
 
-        # Test with head mask
-        torch.manual_seed(1)
+    def test_compute_attention_weights_with_key_padding_mask(self):
+        layer = self.factory(64, 8).eval()
         query = torch.rand(2, 10, 64)
         key = torch.rand(2, 20, 64)
         value = torch.rand(2, 20, 64)
@@ -161,6 +159,22 @@ class TestMultiHeadAttention(unittest.TestCase):
         self.assertTrue(torch.all(torch.isclose(attention_weights1, attention_weights2)))
         self.assertTrue(torch.all(torch.isclose(output1.expand(2, 3, -1, -1), output2, atol=atol)))
 
+    def test_compute_output_with_mask(self):
+        layer = self.factory(64, 8).eval()
+        query = torch.rand(2, 10, 64)
+        key = torch.rand(2, 20, 64)
+        value = torch.rand(2, 20, 64)
+        key_padding_mask = torch.cat((
+            torch.zeros(2, 18, dtype=torch.bool),
+            torch.ones(2, 2, dtype=torch.bool),
+        ), dim=-1)
+        # Compute output by actually truncating the keys and values
+        output_truncated = layer(query, key[:,:18,:], value[:,:18,:])
+        # Compute output by masking keys and values
+        output_masked = layer(query, key, value, key_padding_mask=key_padding_mask)
+        self.assertTrue(torch.allclose(output_truncated, output_masked))
+        self.assertFalse(torch.allclose(layer(query, key, value), output_masked))
+
 
 class TestRelativeMultiHeadAttention(TestMultiHeadAttention, unittest.TestCase):
     def __init__(self, *args, **kwargs):
@@ -168,8 +182,7 @@ class TestRelativeMultiHeadAttention(TestMultiHeadAttention, unittest.TestCase):
         self.factory = partial(RelativeMultiHeadAttention, max_distance=15)
 
     def test_skew(self):
-        layer = RelativeMultiHeadAttention(64, 8, max_distance=5)
-        layer.eval()
+        layer = RelativeMultiHeadAttention(64, 8, max_distance=5).eval()
         x = torch.arange(-4, 5).expand(5, -1)
         ans = torch.tensor([[j-i for j in range(5)] for i in range(5)])
         self.assertTrue(torch.all(layer._skew(x, 5) == ans))
@@ -181,8 +194,7 @@ class TestMultiHeadAttentionBlock(unittest.TestCase):
             MultiHeadAttention(64, 8),
             feedforward_dim=64,
             feedforward_activation=torch.nn.ReLU()
-        )
-        layer.eval()
+        ).eval()
         x = torch.randn(10, 64)
         y = torch.randn(20, 64)
         mask = torch.randint(0, 2, (10, 20), dtype=torch.bool)
@@ -199,7 +211,6 @@ class TestMultiHeadAttentionBlock(unittest.TestCase):
             average_attention_weights=False,
             return_attention_weights=True)
         self.assertTrue(torch.all(torch.isclose(attention_weights1, attention_weights2)))
-
 
 
 if __name__ == "__main__":
