@@ -1,9 +1,16 @@
+import copy
 from itertools import combinations
 import lightning as L
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Any, Dict, Sequence, Union
+from typing import Any, Dict, Optional, Sequence, Union
+
+from . import LightningModuleWithHyperparameters
+from .. import layers
+from ...data.vocabularies import dna, Vocabulary
+
+# Contrastive Pretraining --------------------------------------------------------------------------
 
 class ContrastivePretrainingModel(L.LightningModule):
     def __init__(
@@ -66,3 +73,85 @@ class ContrastivePretrainingModel(L.LightningModule):
 
     def test_step(self, batch):
         return self._step("test", batch)
+
+# Encoders -----------------------------------------------------------------------------------------
+
+class DnaTransformerModel(LightningModuleWithHyperparameters):
+    def __init__(
+        self,
+        transformer_encoder: layers.TransformerEncoder,
+        kmer: int = 1,
+        kmer_stride: int = 1
+    ):
+        super().__init__()
+        self.transformer_encoder = transformer_encoder
+        self.kmer = kmer
+        self.kmer_stride = kmer_stride
+        self.class_token = nn.Parameter(torch.randn(self.transformer_encoder.embed_dim))
+        self.vocabulary = Vocabulary(dna(kmer))
+
+    def forward(
+        self,
+        src: torch.Tensor,
+        src_key_padding_mask: Optional[torch.Tensor] = None,
+        attention_head_mask: Optional[torch.Tensor] = None,
+        average_attention_weights: bool = True,
+        return_attention_weights: bool = False,
+        **kwargs
+    ):
+        class_tokens = self.class_token.expand(*src.shape[:-2], 1, -1)
+        src = torch.cat((class_tokens, src), -2)
+        output = self.transformer_encoder(
+            src,
+            src_key_padding_mask=src_key_padding_mask,
+            attention_head_mask=attention_head_mask,
+            average_attention_weights=average_attention_weights,
+            return_attention_weights=return_attention_weights,
+            **kwargs
+        )
+        output, *extra = output if isinstance(output, tuple) else (output,)
+        class_tokens = output.select(-2, 0)
+        output_tokens = output.narrow(-2, 1, src.shape[-2] - 1)
+        return class_tokens, output_tokens, *extra
+
+
+class AmpliconSampleTransformerModel(LightningModuleWithHyperparameters):
+    def __init__(
+        self,
+        transformer_encoder: layers.TransformerEncoder,
+        dna_encoder: nn.Module,
+        vocabulary: Vocabulary,
+    ):
+        super().__init__()
+        self.transformer_encoder = transformer_encoder
+        self.dna_encoder = dna_encoder
+        self.vocabulary = vocabulary
+
+    def forward(
+        self,
+        src: torch.Tensor,
+        src_key_padding_mask: Optional[torch.Tensor] = None,
+        attention_head_mask: Optional[torch.Tensor] = None,
+        average_attention_weights: bool = True,
+        return_attention_weights: bool = False,
+        **kwargs
+    ):
+        if not src.is_floating_point() and self.dna_encoder is not None:
+            # Needs to be encoded.
+            pad_id = self.vocabulary["[PAD]"]
+            if src_key_padding_mask is None:
+                src_key_padding_mask = torch.all(src == pad_id, -1)
+            with torch.no_grad():
+                src = self.dna_encoder(src)
+        output = self.transformer_encoder(
+            src,
+            src_key_padding_mask=src_key_padding_mask,
+            attention_head_mask=attention_head_mask,
+            average_attention_weights=average_attention_weights,
+            return_attention_weights=return_attention_weights,
+            **kwargs
+        )
+        output, *extra = output if isinstance(output, tuple) else (output,)
+        class_tokens = output.select(-2, 0)
+        output_tokens = output.narrow(-2, 1, src.shape[-2] - 1)
+        return class_tokens, output_tokens, *extra
