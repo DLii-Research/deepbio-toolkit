@@ -1,20 +1,26 @@
 import abc
 import copy
+import lightning as L
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Any, Callable, cast, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, cast, Generic, List, Optional, Sequence, Tuple, TypeVar, Union
+
+from .._utils import export
+
+Mha = TypeVar("Mha", bound="MultiHeadAttention")
 
 # Multi-head Attention Mechanisms ------------------------------------------------------------------
 
-class MultiHeadAttention(nn.Module):
+@export
+class MultiHeadAttention(L.LightningModule):
     def __init__(
         self,
         embed_dim: int,
         num_heads: int,
-        dropout=0.0,
-        bias=True,
+        dropout: float = 0.0,
+        bias: bool = True,
         head_embed_dim: Optional[int] = None,
     ):
         super().__init__()
@@ -43,7 +49,7 @@ class MultiHeadAttention(nn.Module):
         attention_head_mask: Optional[torch.Tensor] = None,
         average_attention_weights: bool = True,
         return_attention_weights: bool = False
-    ):
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         *extra_dims_q, n_q, _ = query.size()
         *extra_dims_k, n_k, _ = key.size()
         *extra_dims_v, _, _ = value.size()
@@ -92,7 +98,7 @@ class MultiHeadAttention(nn.Module):
         key: torch.Tensor,
         attention_mask: Optional[torch.Tensor],
         attention_head_mask: Optional[torch.Tensor]
-    ):
+    ) -> torch.Tensor:
         attention_weights = torch.matmul(query, key.transpose(-2, -1))/np.sqrt(self.head_embed_dim)
         if attention_mask is not None:
             attention_weights = attention_weights.masked_fill(attention_mask.unsqueeze(-3), float("-inf"))
@@ -101,28 +107,32 @@ class MultiHeadAttention(nn.Module):
             attention_weights = attention_weights * attention_head_mask.view((-1, 1, 1))
         return attention_weights
 
+    def __len__(self):
+        return self.num_heads
 
+
+@export
 class RelativeMultiHeadAttention(MultiHeadAttention):
     def __init__(
         self,
         embed_dim: int,
         num_heads: int,
         max_distance: int,
-        dropout=0.0,
-        bias=True,
+        dropout: float = 0.0,
+        bias: bool = True,
         head_embed_dim: Optional[int] = None,
     ):
         super().__init__(embed_dim, num_heads, dropout, bias, head_embed_dim)
         self.max_distance = max_distance
-        self.embeddings = nn.Parameter(torch.randn(self.head_embed_dim, 2*max_distance - 1)) # (dxn)
+        self.pos_embeddings = nn.Parameter(torch.randn(self.head_embed_dim, 2*max_distance - 1)) # (dxn)
 
-    def _nd_replication_pad(self, x, padding):
+    def _nd_replication_pad(self, x: torch.Tensor, padding: Tuple[int, int]):
         extra_dims = x.shape[:-2]
         x = x.view(-1, *x.shape[-2:])
         x = F.pad(x, padding, mode="replicate")
         return x.view(*extra_dims, *x.shape[-2:])
 
-    def _skew(self, x, n):
+    def _skew(self, x: torch.Tensor, n: int) -> torch.Tensor:
         """
         Perform matrix ops to rearange the matrix so that cells
         contain the correct comparisons.
@@ -143,8 +153,8 @@ class RelativeMultiHeadAttention(MultiHeadAttention):
         attention_head_mask: Optional[torch.Tensor]
     ):
         att_qk = torch.matmul(query, key.transpose(-2, -1))
-        att_qrel = self._skew(torch.matmul(query, self.embeddings), key.shape[-2])
-        att_krel = self._skew(torch.matmul(key, self.embeddings.flip(-1)), query.shape[-2]).transpose(-1, -2)
+        att_qrel = self._skew(torch.matmul(query, self.pos_embeddings), key.shape[-2])
+        att_krel = self._skew(torch.matmul(key, self.pos_embeddings.flip(-1)), query.shape[-2]).transpose(-1, -2)
         attention_weights = (att_qk + att_qrel + att_krel) / np.sqrt(self.head_embed_dim)
         if attention_mask is not None:
             attention_weights = attention_weights.masked_fill(attention_mask.unsqueeze(-3), float("-inf"))
@@ -155,12 +165,13 @@ class RelativeMultiHeadAttention(MultiHeadAttention):
 
 # Transformer Generics -----------------------------------------------------------------------------
 
-class MultiHeadAttentionBlock(nn.Module):
+@export
+class MultiHeadAttentionBlock(L.LightningModule):
     def __init__(
         self,
         mha: MultiHeadAttention,
         feedforward_dim: int,
-        feedforward_activation: Union[nn.Module, Callable] = F.gelu,
+        feedforward_activation: Union[L.LightningModule, Callable] = F.gelu,
         norm_first: bool = True,
         dropout: float = 0.1,
     ):
@@ -169,13 +180,10 @@ class MultiHeadAttentionBlock(nn.Module):
         self.feedforward_dim = feedforward_dim
         self.feedforward_activation = feedforward_activation
         self.norm_first = norm_first
-
         self.norm1 = nn.LayerNorm(mha.embed_dim)
         self.norm2 = nn.LayerNorm(mha.embed_dim)
-
         self.feedforward_linear1 = nn.Linear(mha.embed_dim, feedforward_dim)
         self.feedforward_linear2 = nn.Linear(feedforward_dim, mha.embed_dim)
-
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
 
@@ -251,6 +259,10 @@ class MultiHeadAttentionBlock(nn.Module):
             return x, *extra_output
         return x
 
+    @property
+    def embed_dim(self):
+        return self.mha.embed_dim
+
 # Transformer Encoders -----------------------------------------------------------------------------
 
 class ITransformerEncoderBlock(abc.ABC):
@@ -261,24 +273,36 @@ class ITransformerEncoderBlock(abc.ABC):
     def forward(
         self,
         src: torch.Tensor,
+        src_mask: torch.Tensor,
         src_key_padding_mask: Optional[torch.Tensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
+        attention_head_mask: Optional[torch.Tensor] = None,
         average_attention_weights: bool = True,
         return_attention_weights: bool = False
-    ):
+    ) -> Any:
         return NotImplemented
 
+    @property
+    @abc.abstractmethod
+    def embed_dim(self) -> int:
+        return NotImplemented
 
-class TransformerEncoderBlock(MultiHeadAttentionBlock, ITransformerEncoderBlock):
+@export
+class TransformerEncoderBlock(ITransformerEncoderBlock, L.LightningModule):
     def __init__(
         self,
         mha: MultiHeadAttention,
         feedforward_dim: int,
-        feedforward_activation: Union[nn.Module, Callable] = nn.GELU(),
+        feedforward_activation: Union[L.LightningModule, Callable] = F.gelu,
         norm_first: bool = True,
         dropout: float = 0.1,
     ):
-        super().__init__(mha, feedforward_dim, feedforward_activation, norm_first, dropout)
+        super().__init__()
+        self.mab = MultiHeadAttentionBlock(
+            mha=mha,
+            feedforward_dim=feedforward_dim,
+            feedforward_activation=feedforward_activation,
+            norm_first=norm_first,
+            dropout=dropout)
         self.attention_head_mask = nn.Parameter(torch.ones(mha.num_heads), requires_grad=False)
 
     def forward(
@@ -286,20 +310,70 @@ class TransformerEncoderBlock(MultiHeadAttentionBlock, ITransformerEncoderBlock)
         src: torch.Tensor,
         src_mask: Optional[torch.Tensor] = None,
         src_key_padding_mask: Optional[torch.Tensor] = None,
+        attention_head_mask: Optional[torch.Tensor] = None,
         average_attention_weights: bool = True,
         return_attention_weights: bool = False
     ):
-        return super().forward(
+        if attention_head_mask is None:
+            attention_head_mask = self.attention_head_mask
+        return self.mab.forward(
             x=src,
             y=src,
             attention_mask=src_mask,
             key_padding_mask=src_key_padding_mask,
-            attention_head_mask=self.attention_head_mask,
+            attention_head_mask=attention_head_mask,
             average_attention_weights=average_attention_weights,
             return_attention_weights=return_attention_weights)
 
+    @property
+    def embed_dim(self) -> int:
+        return self.mab.embed_dim
 
-class TransformerEncoder(nn.Module):
+
+@export
+class InducedSetAttentionBlock(ITransformerEncoderBlock, L.LightningModule):
+    def __init__(
+        self,
+        mha: MultiHeadAttention,
+        num_inducing_points: int,
+        feedforward_dim: int,
+        feedforward_activation: Union[L.LightningModule, Callable] = F.gelu,
+        norm_first: bool = True,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.num_inducing_points = num_inducing_points
+        self.inducing_points = nn.Parameter(torch.randn(num_inducing_points, mha.embed_dim))
+        self.mab1 = MultiHeadAttentionBlock(copy.deepcopy(mha), feedforward_dim, feedforward_activation, norm_first, dropout)
+        self.mab2 = MultiHeadAttentionBlock(copy.deepcopy(mha), feedforward_dim, feedforward_activation, norm_first, dropout)
+
+    def forward(
+        self,
+        src: torch.Tensor,
+        src_mask: Optional[torch.Tensor] = None,
+        src_key_padding_mask: Optional[torch.Tensor] = None,
+        attention_head_mask: Optional[torch.Tensor] = None,
+        average_attention_weights: bool = True,
+        return_attention_weights: bool = False
+    ):
+        if src_mask is not None:
+            raise Exception("Attention mask not supported for InducedSetAttentionBlock.")
+        i = self.inducing_points.unsqueeze(-3).expand(*src.shape[:-2], -1, -1)
+        h = self.mab1(i, src, key_padding_mask=src_key_padding_mask)
+        return self.mab2(
+            src,
+            h,
+            attention_head_mask=attention_head_mask,
+            average_attention_weights=average_attention_weights,
+            return_attention_weights=return_attention_weights)
+
+    @property
+    def embed_dim(self):
+        return self.mab1.mha.embed_dim
+
+
+@export
+class TransformerEncoder(L.LightningModule):
     def __init__(self, encoder_layer: TransformerEncoderBlock, num_layers: int):
         super().__init__()
         self.layers = nn.ModuleList([copy.deepcopy(encoder_layer) for _ in range(num_layers)])
@@ -329,36 +403,12 @@ class TransformerEncoder(nn.Module):
             return output, *zip(*extra_outputs)
         return output
 
+    @property
+    def embed_dim(self):
+        return self.layers[0].embed_dim
 
-class InducedSetAttentionBlock(ITransformerEncoderBlock, nn.Module):
-    def __init__(
-        self,
-        mha: MultiHeadAttention,
-        num_inducing_points: int,
-        feedforward_dim: int,
-        feedforward_activation: Union[nn.Module, Callable] = F.gelu,
-        norm_first: bool = True,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        self.num_inducing_points = num_inducing_points
-        self.inducing_points = nn.Parameter(torch.randn(num_inducing_points, mha.embed_dim))
-        self.mab1 = MultiHeadAttentionBlock(copy.deepcopy(mha), feedforward_dim, feedforward_activation, norm_first, dropout)
-        self.mab2 = MultiHeadAttentionBlock(copy.deepcopy(mha), feedforward_dim, feedforward_activation, norm_first, dropout)
-
-    def forward(
-        self,
-        src: torch.Tensor,
-        src_mask: Optional[torch.Tensor] = None,
-        src_key_padding_mask: Optional[torch.Tensor] = None,
-        average_attention_weights: bool = True,
-        return_attention_weights: bool = False
-    ):
-        if src_mask is not None:
-            raise Exception("Attention mask not supported for InducedSetAttentionBlock.")
-        i = self.inducing_points.unsqueeze(-3).expand(*src.shape[:-2], -1, -1)
-        h = self.mab1(i, src, key_padding_mask=src_key_padding_mask)
-        return self.mab2(src, h, average_attention_weights=average_attention_weights, return_attention_weights=return_attention_weights)
+    def __len__(self):
+        return len(self.layers)
 
 # Transformer Decoders -----------------------------------------------------------------------------
 
@@ -381,13 +431,14 @@ class ITransformerDecoderBlock(abc.ABC):
         return NotImplemented
 
 
-class TransformerDecoderBlock(ITransformerEncoderBlock, nn.Module):
+@export
+class TransformerDecoderBlock(ITransformerEncoderBlock, L.LightningModule):
 
     def __init__(
         self,
         mha: MultiHeadAttention,
         feedforward_dim: int,
-        feedforward_activation: Union[nn.Module, Callable] = F.gelu,
+        feedforward_activation: Union[L.LightningModule, Callable] = F.gelu,
         norm_first: bool = True,
         dropout: float = 0.1,
     ):
@@ -515,7 +566,8 @@ class TransformerDecoderBlock(ITransformerEncoderBlock, nn.Module):
         return x
 
 
-class TransformerDecoder(nn.Module):
+@export
+class TransformerDecoder(L.LightningModule):
     def __init__(self, decoder_layer: TransformerDecoderBlock, num_layers: int):
         super().__init__()
         self.layers = nn.ModuleList([copy.deepcopy(decoder_layer) for _ in range(num_layers)])
@@ -551,14 +603,22 @@ class TransformerDecoder(nn.Module):
             return output, *zip(*extra_outputs)
         return output
 
+    @property
+    def embed_dim(self):
+        return self.layers[0].embed_dim
 
+    def __len__(self):
+        return len(self.layers)
+
+
+@export
 class ConditionedInducedSetAttentionBlock(TransformerDecoderBlock):
     def __init__(
         self,
         mha: MultiHeadAttention,
         num_inducing_points: int,
         feedforward_dim: int,
-        feedforward_activation: Union[nn.Module, Callable] = F.gelu,
+        feedforward_activation: Union[L.LightningModule, Callable] = F.gelu,
         norm_first: bool = True,
         dropout: float = 0.1,
     ):
@@ -589,9 +649,14 @@ class ConditionedInducedSetAttentionBlock(TransformerDecoderBlock):
         h = self.mab1(i, target, attention_mask=target_key_padding_mask)
         return self.mab2(target, h, average_attention_weights=average_attention_weights, return_attention_weights=return_attention_weights)
 
+    @property
+    def embed_dim(self):
+        return self.mab1.embed_dim
+
 # Miscellaneous
 
-class SampleSet(nn.Module):
+@export
+class SampleSet(L.LightningModule):
     def __init__(self, embed_dim: int, max_set_size: int):
         super().__init__()
         self.embed_dim = embed_dim
