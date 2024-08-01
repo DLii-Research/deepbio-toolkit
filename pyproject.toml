@@ -9,6 +9,9 @@ readme = "README.md"
 license = { file="LICENSE" }
 requires-python = ">=3.9"
 dependencies = [
+  "jsonargparse >= 4.32.0",
+  "lightning[pytorch-extra]",
+  "omegaconf >= 2.3.0",
   "wandb >= 0.17.3"
 ]
 
@@ -18,3 +21,8 @@ dependencies = [
 
 [tool.ruff]
 line-length = 100
+
+[tool.pyright]
+venvPath = "/opt/conda/envs"
+venv = "qiime2-amplicon-2024.5"
+pythonVersion = "3.9.19"
