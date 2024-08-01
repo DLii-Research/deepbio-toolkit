@@ -1,6 +1,6 @@
 [project]
-name = "deep-dna-2"
-version = "0.0.2"
+name = "deep-dna"
+version = "0.1.0"
 authors = [
   { name="David W. Ludwig II", email="davidludwigii@gmail.com" }
 ]
