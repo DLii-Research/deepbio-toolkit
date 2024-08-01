@@ -26,7 +26,7 @@ class SequenceDataset(Dataset):
         return entry
 
 
-class SampleDataset(Dataset):
+class AmpliconSampleDataset(Dataset):
     def __init__(
         self,
         samples: Sequence[FastaMappingDb],
