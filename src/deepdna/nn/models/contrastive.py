@@ -9,9 +9,11 @@ from typing import Any, Dict, Optional, Sequence, Union
 from . import LightningModuleWithHyperparameters
 from .. import layers
 from ...data.vocabularies import dna, Vocabulary
+from ..._utils import export
 
 # Contrastive Pretraining --------------------------------------------------------------------------
 
+@export
 class ContrastivePretrainingModel(L.LightningModule):
     def __init__(
         self,
@@ -76,6 +78,7 @@ class ContrastivePretrainingModel(L.LightningModule):
 
 # Encoders -----------------------------------------------------------------------------------------
 
+@export
 class DnaTransformerModel(LightningModuleWithHyperparameters):
     def __init__(
         self,
@@ -115,6 +118,7 @@ class DnaTransformerModel(LightningModuleWithHyperparameters):
         return class_tokens, output_tokens, *extra
 
 
+@export
 class AmpliconSampleTransformerModel(LightningModuleWithHyperparameters):
     def __init__(
         self,
