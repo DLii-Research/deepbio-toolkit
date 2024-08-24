@@ -117,33 +117,24 @@ class RelativeMultiHeadAttention(MultiHeadAttention):
         self,
         embed_dim: int,
         num_heads: int,
-        max_distance: int,
+        max_length: int,
         dropout: float = 0.0,
         bias: bool = True,
         head_embed_dim: Optional[int] = None,
     ):
         super().__init__(embed_dim, num_heads, dropout, bias, head_embed_dim)
-        self.max_distance = max_distance
-        self.pos_embeddings = nn.Parameter(torch.randn(self.head_embed_dim, 2*max_distance - 1)) # (dxn)
+        self.max_length = max_length
+        self.pos_embeddings = nn.Parameter(torch.randn(self.head_embed_dim, 2*max_length - 1)) # (dxn)
 
-    def _nd_replication_pad(self, x: torch.Tensor, padding: Tuple[int, int]):
-        extra_dims = x.shape[:-2]
-        x = x.view(-1, *x.shape[-2:])
-        x = F.pad(x, padding, mode="replicate")
-        return x.view(*extra_dims, *x.shape[-2:])
-
-    def _skew(self, x: torch.Tensor, n: int) -> torch.Tensor:
+    def _skew(self, x: torch.Tensor):
         """
-        Perform matrix ops to rearange the matrix so that cells
-        contain the correct comparisons.
+        Memory-efficient skew operation.
         """
-        size = x.shape[-2]
-        n_rel = 2*n - 1
-        x = self._nd_replication_pad(x, (n - self.max_distance, n - self.max_distance + 1))
-        x = x.flatten(-2)
-        x = F.pad(x, (0, n_rel*size - x.shape[-1]))
-        x = x.unflatten(-1, (size, n_rel))
-        return x.narrow(-1, n - 1, n)
+        n = x.shape[-1] - x.shape[-1]//2
+        x = F.pad(x, (0, 1))
+        skewed = x.flatten(-2).narrow(-1, 0, x.shape[-2]*(x.shape[-1] - 1)).view((*x.shape[:-1], -1))
+        rel = skewed.narrow(-1, n - 1, n)
+        return rel
 
     def compute_attention_weights(
         self,
@@ -152,10 +143,15 @@ class RelativeMultiHeadAttention(MultiHeadAttention):
         attention_mask: Optional[torch.Tensor],
         attention_head_mask: Optional[torch.Tensor]
     ):
+        # Get required position embeddings
+        n = key.shape[-2]
+        pos_embeddings = F.pad(self.pos_embeddings, (n - self.max_length, n - self.max_length), mode="replicate")
         att_qk = torch.matmul(query, key.transpose(-2, -1))
-        att_qrel = self._skew(torch.matmul(query, self.pos_embeddings), key.shape[-2])
-        att_krel = self._skew(torch.matmul(key, self.pos_embeddings.flip(-1)), query.shape[-2]).transpose(-1, -2)
-        attention_weights = (att_qk + att_qrel + att_krel) / np.sqrt(self.head_embed_dim)
+        att_qrel = self._skew(torch.matmul(query, pos_embeddings))
+        # att_qrel = self._skew(torch.matmul(query, self.pos_embeddings), key.shape[-2])
+        # att_krel = self._skew(torch.matmul(key, self.pos_embeddings.flip(-1)), query.shape[-2]).transpose(-1, -2)
+        attention_weights = (att_qk + att_qrel) / np.sqrt(self.head_embed_dim)
+        # attention_weights = (att_qk + att_qrel + att_krel) / np.sqrt(self.head_embed_dim)
         if attention_mask is not None:
             attention_weights = attention_weights.masked_fill(attention_mask.unsqueeze(-3), float("-inf"))
         attention_weights = F.softmax(attention_weights, dim=-1) # [..., h, n_q, n_k]
