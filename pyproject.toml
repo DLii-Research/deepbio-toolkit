@@ -1,28 +1,21 @@
 [project]
-name = "deep-dna"
+name = "dbtk-core"
 version = "0.1.0"
 authors = [
   { name="David W. Ludwig II", email="davidludwigii@gmail.com" }
 ]
-description = "Deep learning models for handling DNA sequences and high-throughput sequencing samples."
+description = "A repository of common layers, models, and tools for building and running deep-learning models for computational biology."
 readme = "README.md"
 license = { file="LICENSE" }
 requires-python = ">=3.8"
 dependencies = [
-  "jsonargparse >= 4.32.0",
-  "lightning[pytorch-extra]",
-  "omegaconf >= 2.3.0",
+  "lightning[pytorch-extra] >= 2.4.0",
   "wandb >= 0.17.3"
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/DLii-Research/deep-dna"
-"Bug Tracker" = "https://github.com/DLii-Research/deep-dna/issues"
+"Homepage" = "https://github.com/DLii-Research/dbtk-core"
+"Bug Tracker" = "https://github.com/DLii-Research/dbtk-core/issues"
 
 [tool.ruff]
 line-length = 100
-
-[tool.pyright]
-venvPath = "/opt/conda/envs"
-venv = "qiime2-amplicon-2024.5"
-pythonVersion = "3.9.19"

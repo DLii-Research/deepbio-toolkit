@@ -120,7 +120,7 @@ class RelativeMultiHeadAttention(MultiHeadAttention):
         max_length: int,
         dropout: float = 0.0,
         bias: bool = True,
-        head_embed_dim: Optional[int] = None,
+        head_embed_dim: Optional[int] = None
     ):
         super().__init__(embed_dim, num_heads, dropout, bias, head_embed_dim)
         self.max_length = max_length
@@ -148,9 +148,9 @@ class RelativeMultiHeadAttention(MultiHeadAttention):
         pos_embeddings = F.pad(self.pos_embeddings, (n - self.max_length, n - self.max_length), mode="replicate")
         att_qk = torch.matmul(query, key.transpose(-2, -1))
         att_qrel = self._skew(torch.matmul(query, pos_embeddings))
+        attention_weights = (att_qk + att_qrel) / np.sqrt(self.head_embed_dim)
         # att_qrel = self._skew(torch.matmul(query, self.pos_embeddings), key.shape[-2])
         # att_krel = self._skew(torch.matmul(key, self.pos_embeddings.flip(-1)), query.shape[-2]).transpose(-1, -2)
-        attention_weights = (att_qk + att_qrel) / np.sqrt(self.head_embed_dim)
         # attention_weights = (att_qk + att_qrel + att_krel) / np.sqrt(self.head_embed_dim)
         if attention_mask is not None:
             attention_weights = attention_weights.masked_fill(attention_mask.unsqueeze(-3), float("-inf"))

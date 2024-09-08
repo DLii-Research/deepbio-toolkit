@@ -1,3 +1,3 @@
-# deep-dna-2
+# deepbio-toolkit-core
 
-A repository of models and tools for building and running deep-learning models for DNA sequencing.
+A repository of common layers, models, and tools for building and running deep-learning models for computational biology.
