@@ -385,12 +385,15 @@ class TransformerEncoder(ITransformerEncoder, L.LightningModule):
     ):
         extra_outputs = []
         output = src
-        for layer in cast(Sequence[ITransformerEncoder], self.layers):
+        head_mask = None
+        for i, layer in enumerate(cast(Sequence[ITransformerEncoder], self.layers)):
+            if attention_head_mask is not None:
+                head_mask = attention_head_mask[i]
             output = layer(
                 output,
                 src_mask=src_mask,
                 src_key_padding_mask=src_key_padding_mask,
-                attention_head_mask=attention_head_mask,
+                attention_head_mask=head_mask,
                 average_attention_weights=average_attention_weights,
                 return_attention_weights=return_attention_weights)
             if isinstance(output, tuple):
