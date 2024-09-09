@@ -1,5 +1,5 @@
 [project]
-name = "dbtk-core"
+name = "deepbio-toolkit"
 version = "0.1.0"
 authors = [
   { name="David W. Ludwig II", email="davidludwigii@gmail.com" }
@@ -9,13 +9,12 @@ readme = "README.md"
 license = { file="LICENSE" }
 requires-python = ">=3.8"
 dependencies = [
-  "lightning[pytorch-extra] >= 2.4.0",
-  "wandb >= 0.17.3"
+  "lightning[pytorch-extra] >= 2.4.0"
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/DLii-Research/dbtk-core"
-"Bug Tracker" = "https://github.com/DLii-Research/dbtk-core/issues"
+"Homepage" = "https://github.com/DLii-Research/deepbio-toolkit"
+"Bug Tracker" = "https://github.com/DLii-Research/deepbio-toolkit/issues"
 
 [tool.ruff]
 line-length = 100
