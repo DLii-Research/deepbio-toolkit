@@ -1,10 +1,11 @@
 [project]
 name = "deepbio-toolkit"
-version = "0.1.0"
+version = "0.1.1"
 authors = [
   { name="David W. Ludwig II", email="davidludwigii@gmail.com" }
 ]
-description = "A repository of common layers, models, and tools for building and running deep-learning models for computational biology."
+description = "A collection of various deep-learning and data handling tools for running and building deep-learning models for computational biology."
+
 readme = "README.md"
 license = { file="LICENSE" }
 requires-python = ">=3.8"
