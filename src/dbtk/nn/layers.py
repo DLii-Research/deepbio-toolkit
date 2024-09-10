@@ -325,6 +325,10 @@ class TransformerEncoderBlock(ITransformerEncoder, L.LightningModule):
     def embed_dim(self) -> int:
         return self.mab.embed_dim
 
+    @property
+    def num_heads(self) -> int:
+        return self.mab.mha.num_heads
+
 
 @export
 class InducedSetAttentionBlock(ITransformerEncoder, L.LightningModule):
@@ -367,6 +371,9 @@ class InducedSetAttentionBlock(ITransformerEncoder, L.LightningModule):
     def embed_dim(self):
         return self.mab1.mha.embed_dim
 
+    @property
+    def num_heads(self):
+        return self.mab1.mha.num_heads
 
 @export
 class TransformerEncoder(ITransformerEncoder, L.LightningModule):
@@ -405,11 +412,27 @@ class TransformerEncoder(ITransformerEncoder, L.LightningModule):
         return output
 
     @property
+    def attention_head_mask(self):
+        return torch.stack([layer.attention_head_mask for layer in self.layers])
+
+    @attention_head_mask.setter
+    def attention_head_mask(self, attention_head_mask):
+        for layer, mask in zip(self.layers, attention_head_mask):
+            layer.attention_head_mask[:] = mask
+
+    @property
     def embed_dim(self):
         return self.layers[0].embed_dim
 
+    @property
+    def num_heads(self):
+        return self.layers[0].num_heads
+
     def __len__(self):
         return len(self.layers)
+
+    def __getitem__(self, index):
+        return self.layers[index]
 
 # Transformer Decoders -----------------------------------------------------------------------------
 
