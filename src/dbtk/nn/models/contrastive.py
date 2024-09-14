@@ -6,7 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Any, Dict, Optional, Sequence, Union
 
-from . import LightningModuleWithHyperparameters
 from .. import layers
 from ...data.vocabularies import dna, Vocabulary
 from ..._utils import export
@@ -82,7 +81,7 @@ class ContrastivePretrainingModel(L.LightningModule):
 # Encoders -----------------------------------------------------------------------------------------
 
 @export
-class DnaTransformerModel(LightningModuleWithHyperparameters):
+class DnaTransformerModel(LightningModule):
     def __init__(
         self,
         transformer_encoder: layers.TransformerEncoder,
@@ -122,7 +121,7 @@ class DnaTransformerModel(LightningModuleWithHyperparameters):
 
 
 @export
-class AmpliconSampleTransformerModel(LightningModuleWithHyperparameters):
+class AmpliconSampleTransformerModel(LightningModule):
     def __init__(
         self,
         transformer_encoder: layers.TransformerEncoder,

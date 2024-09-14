@@ -1,9 +1,9 @@
+import lightning as L
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Callable, Optional
 
-from . import LightningModuleWithHyperparameters
 from .. import layers
 from ...data.vocabularies import Vocabulary
 from ..._utils import export
@@ -18,7 +18,7 @@ class BertVocabulary(Vocabulary):
 # Models -------------------------------------------------------------------------------------------
 
 @export
-class BertModel(LightningModuleWithHyperparameters):
+class BertModel(L.LightningModule):
     def __init__(
         self,
         transformer_encoder: layers.TransformerEncoder,
@@ -78,7 +78,7 @@ class BertModel(LightningModuleWithHyperparameters):
 
 
 @export
-class BertPretrainingModel(LightningModuleWithHyperparameters):
+class BertPretrainingModel(L.LightningModule):
     def __init__(self, base: BertModel, num_nsp_classes: Optional[int] = None):
         super().__init__()
         self.base = base
@@ -144,7 +144,7 @@ class BertPretrainingModel(LightningModuleWithHyperparameters):
         return self._step("test", batch)
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=1e-4)
+        return torch.optim.Adam(self.parameters(), lr=1e-4) # type: ignore
 
     @property
     def embed_dim(self):

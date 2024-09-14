@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Any, Callable, cast, Generic, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Callable, cast, List, Optional, Sequence, Tuple, TypeVar, Union
 
 from .._utils import export
 
