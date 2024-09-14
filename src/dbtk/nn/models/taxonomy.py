@@ -47,9 +47,9 @@ class TopDownTaxonomyClassifier(L.LightningModule):
         losses = [F.cross_entropy(pred, target) for pred, target in zip(y_pred, labels)]
         loss = torch.stack(losses).sum()
         for rank, rank_accuracy, rank_loss in zip(taxonomy.RANKS, accuracies, losses):
-            self.log(f"{mode}/accuracy/{rank.lower()}", rank_accuracy)
-            self.log(f"{mode}/loss/{rank.lower()}", rank_loss)
-        self.log(f"{mode}/loss", loss)
+            self.log(f"{mode}/accuracy/{rank.lower()}", rank_accuracy, on_epoch=False, on_step=True)
+            self.log(f"{mode}/loss/{rank.lower()}", rank_loss, on_epoch=False, on_step=True)
+        self.log(f"{mode}/loss", loss, on_epoch=False, on_step=True)
         return loss
 
     def training_step(self, batch):
