@@ -3,7 +3,7 @@ from .._utils import export
 
 @export
 def tokenize_dna(
-    sequence: bytes,
+    sequence: str,
     kmer: int,
     kmer_stride: int = 1
 ):
@@ -20,5 +20,5 @@ class DnaTokenizer:
         self.kmer = kmer
         self.kmer_stride = kmer_stride
 
-    def __call__(self, sequence: bytes):
+    def __call__(self, sequence: str):
         return tokenize_dna(sequence, self.kmer, self.kmer_stride)
