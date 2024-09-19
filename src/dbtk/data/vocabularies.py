@@ -1,7 +1,7 @@
 from itertools import product
 
 def dna(kmer: int = 1):
-    return list(map(str.encode, map("".join, product("ACGT", repeat=kmer))))
+    return list(map(str, map("".join, product("ACGT", repeat=kmer))))
 
 class Vocabulary:
     def __init__(self, words):
