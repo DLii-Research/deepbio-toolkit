@@ -130,8 +130,8 @@ class BertPretrainingModel(L.LightningModule):
             self.log(f"{mode}/segment_b_loss", src_b_loss)
         else:
             self.log(f"{mode}/segment_loss", src_a_loss)
-        self.log(f"{mode}/loss", loss)
-        self.log(f"{mode}/reconstruction_accuracy", num_correct.float() / n)
+        self.log(f"{mode}/loss", loss, prog_bar=True)
+        self.log(f"{mode}/reconstruction_accuracy", num_correct.float() / n, prog_bar=True)
         return loss
 
     def training_step(self, batch):
