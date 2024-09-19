@@ -21,7 +21,7 @@ class MultiHeadAttention(L.LightningModule):
         num_heads: int,
         dropout: float = 0.0,
         bias: bool = True,
-        head_embed_dim: Optional[int] = None,
+        head_embed_dim: Optional[int] = None
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -169,7 +169,7 @@ class MultiHeadAttentionBlock(L.LightningModule):
         feedforward_dim: int,
         feedforward_activation: Union[L.LightningModule, Callable] = F.gelu,
         norm_first: bool = True,
-        dropout: float = 0.1,
+        dropout: float = 0.1
     ):
         super().__init__()
         self.mha = mha
@@ -290,7 +290,7 @@ class TransformerEncoderBlock(ITransformerEncoder, L.LightningModule):
         feedforward_dim: int,
         feedforward_activation: Union[L.LightningModule, Callable] = F.gelu,
         norm_first: bool = True,
-        dropout: float = 0.1,
+        dropout: float = 0.1
     ):
         super().__init__()
         self.mab = MultiHeadAttentionBlock(
@@ -339,7 +339,7 @@ class InducedSetAttentionBlock(ITransformerEncoder, L.LightningModule):
         feedforward_dim: int,
         feedforward_activation: Union[L.LightningModule, Callable] = F.gelu,
         norm_first: bool = True,
-        dropout: float = 0.1,
+        dropout: float = 0.1
     ):
         super().__init__()
         self.num_inducing_points = num_inducing_points
