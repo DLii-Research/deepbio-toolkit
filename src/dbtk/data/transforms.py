@@ -19,8 +19,12 @@ def random_truncate(
     """
     Randomly truncate a DNA sequence string to the given min/max length.
     """
-    length = rng.integers(min_length, max_length + 1)
-    start = rng.integers(0, len(x) - length + 1)
+    length = rng.integers(min(min_length, len(x)), min(max_length, len(x)) + 1)
+    try:
+        start = rng.integers(0, len(x) - length + 1)
+    except ValueError as e:
+        print(len(x), min_length, max_length, length)
+        raise e
     return x[start:start+length]
 
 
@@ -143,7 +147,7 @@ class Pad:
     def __call__(self, x):
         if isinstance(x, torch.Tensor):
             return F.pad(x, (0, self.length - x.shape[-1]), value=self.value)
-        return type(x)(chain(x, repeat(self.value, self.length - len(self.value) - 1)))
+        return type(x)(chain(x, repeat(self.value, self.length - len(x) - 1)))
 
 
 @export
@@ -185,7 +189,7 @@ class ToTokenIds():
         self.vocabulary = vocabulary
 
     def __call__(self, tokens):
-        return tuple(map(self.vocabulary.__getitem__, tokens))
+        return tuple(self.vocabulary(tokens))
 
 
 @export
