@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class TopDownTaxonomyClassifier(L.LightningModule):
+class TopDownTaxonomyClassificationModel(L.LightningModule):
     """
     The top-down taxonomy architecture proposed by SetBERT.
 
@@ -46,10 +46,11 @@ class TopDownTaxonomyClassifier(L.LightningModule):
         accuracies = [(torch.argmax(pred, -1) == target).sum()/target.numel() for pred, target in zip(y_pred, labels)]
         losses = [F.cross_entropy(pred, target) for pred, target in zip(y_pred, labels)]
         loss = torch.stack(losses).sum()
+        self.log(f"{mode}/loss", loss, prog_bar=True)
         for rank, rank_accuracy, rank_loss in zip(taxonomy.RANKS, accuracies, losses):
-            self.log(f"{mode}/accuracy/{rank.lower()}", rank_accuracy, on_epoch=False, on_step=True)
-            self.log(f"{mode}/loss/{rank.lower()}", rank_loss, on_epoch=False, on_step=True)
-        self.log(f"{mode}/loss", loss, on_epoch=False, on_step=True)
+            self.log(f"{mode}/loss/{rank.lower()}", rank_loss, prog_bar=True)
+        for rank, rank_accuracy, rank_loss in zip(taxonomy.RANKS, accuracies, losses):
+            self.log(f"{mode}/accuracy/{rank.lower()}", rank_accuracy, prog_bar=True)
         return loss
 
     def training_step(self, batch):
