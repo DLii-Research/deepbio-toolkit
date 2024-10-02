@@ -68,6 +68,9 @@ instance/
 # Scrapy stuff:
 .scrapy
 
+# Weights & Biases stuff
+wandb/
+
 # Sphinx documentation
 docs/_build/
 
