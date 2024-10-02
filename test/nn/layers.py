@@ -4,7 +4,7 @@ import torch
 import unittest
 import unittest.mock
 
-from deepdna.nn.layers import (
+from dbtk.nn.layers import (
     MultiHeadAttention,
     MultiHeadAttentionBlock,
     RelativeMultiHeadAttention
@@ -179,13 +179,13 @@ class TestMultiHeadAttention(unittest.TestCase):
 class TestRelativeMultiHeadAttention(TestMultiHeadAttention, unittest.TestCase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.factory = partial(RelativeMultiHeadAttention, max_distance=15)
+        self.factory = partial(RelativeMultiHeadAttention, max_length=15)
 
     def test_skew(self):
-        layer = RelativeMultiHeadAttention(64, 8, max_distance=5).eval()
+        layer = RelativeMultiHeadAttention(64, 8, max_length=5).eval()
         x = torch.arange(-4, 5).expand(5, -1)
         ans = torch.tensor([[j-i for j in range(5)] for i in range(5)])
-        self.assertTrue(torch.all(layer._skew(x, 5) == ans))
+        self.assertTrue(torch.all(layer._skew(x) == ans))
 
 
 class TestMultiHeadAttentionBlock(unittest.TestCase):
