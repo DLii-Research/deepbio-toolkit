@@ -34,6 +34,8 @@ class BertModel(L.LightningModule):
             num_embeddings=len(self.vocabulary),
             embedding_dim=self.embed_dim,
             padding_idx=0)
+        self.return_class_embeddings = True
+        self.return_item_embeddings = True
 
     def forward(
         self,
@@ -65,16 +67,34 @@ class BertModel(L.LightningModule):
             output, *extra = output
         else:
             extra = ()
-        class_tokens = output.select(-2, 0)
-        remaining_tokens = output.narrow(-2, 1, src.shape[-2] - 1)
-        output_tokens = remaining_tokens.narrow(-2, 0, src_a.shape[-1] - 2)
-        if src_b is not None:
-            output_tokens = (output_tokens, remaining_tokens.narrow(-2, src_a.shape[-1] - 1, src_b.shape[-1]))
-        return class_tokens, output_tokens, *extra
+        # (class_tokens, output_tokens, extra)
+        # (class_tokens, (output_tokens_a, output_tokens_b), extra)
+        result = ()
+        if self.return_class_embeddings:
+            result += (output.select(-2, 0),)
+        if self.return_item_embeddings:
+            output_tokens = remaining_tokens.narrow(-2, 0, src_a.shape[-1] - 2)
+            if src_b is not None:
+                output_tokens = (output_tokens, remaining_tokens.narrow(-2, src_a.shape[-1] - 1, src_b.shape[-1]))
+            result += output_tokens
+        result += extra
+        if len(result) == 1:
+            return result[0]
+        return result
 
     @property
     def embed_dim(self):
         return self.transformer_encoder.embed_dim
+
+    def outputs(self, class_embeddings: Optional[bool] = None, item_embeddings: Optional[bool] = None) -> "BertModel":
+        """
+        Configure what the model should return.
+        """
+        if class_embeddings is not None:
+            self.return_class_embeddings = class_embeddings
+        if item_embeddings is not None:
+            self.return_item_embeddings = item_embeddings
+        return self
 
 
 @export
