@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepbio-toolkit"
-version = "0.1.5"
+version = "0.1.6"
 authors = [
   { name="David W. Ludwig II", email="davidludwigii@gmail.com" }
 ]
