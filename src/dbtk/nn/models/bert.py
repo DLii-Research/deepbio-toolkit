@@ -73,9 +73,9 @@ class BertModel(L.LightningModule):
         if self.return_class_embeddings:
             result += (output.select(-2, 0),)
         if self.return_item_embeddings:
-            output_tokens = remaining_tokens.narrow(-2, 0, src_a.shape[-1] - 2)
+            output_tokens = (output.narrow(-2, 1, src_a.shape[-1] - 2),)
             if src_b is not None:
-                output_tokens = (output_tokens, remaining_tokens.narrow(-2, src_a.shape[-1] - 1, src_b.shape[-1]))
+                output_tokens = (output_tokens[0], output.narrow(-2, src_a.shape[-1], src_b.shape[-1]))
             result += output_tokens
         result += extra
         if len(result) == 1:
