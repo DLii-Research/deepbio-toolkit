@@ -1,15 +1,16 @@
-from dnadb.fasta import FastaDb, FastaMappingDb
+from collections import Iterable
+from dnadb.fasta import FastaDb, FastaMappingEntry
 from dnadb.taxonomy import TaxonomyDb
 from pathlib import Path
 from torch.utils.data import Dataset
-from typing import Callable, Optional, Sequence, Union
+from typing import Callable, Optional, Union
 
-from .interfaces import FastaFile
+from .containers import Fasta
 
 class AmpliconSampleDataset(Dataset):
     def __init__(
         self,
-        samples: Sequence[FastaMappingDb],
+        samples: Iterable[Union[FastaDb, FastaMappingEntry]],
         transform: Optional[Callable] = None
     ):
         super().__init__()
@@ -27,13 +28,13 @@ class AmpliconSampleDataset(Dataset):
 
 
 class SequenceDataset(Dataset):
-    def __init__(self, sequences: Union[FastaFile, FastaDb, Path, str], transform: Optional[Callable] = None):
+    def __init__(self, sequences: Union[Fasta, FastaDb, Path, str], transform: Optional[Callable] = None):
         super().__init__()
         if isinstance(sequences, (str, Path)):
             if Path(sequences).is_dir():
                 sequences = FastaDb(sequences)
             else:
-                sequences = FastaFile.open(sequences)
+                sequences = Fasta.open(sequences)
         self.sequences = sequences
         self.transform = transform
 
