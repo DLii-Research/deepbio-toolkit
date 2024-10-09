@@ -27,3 +27,8 @@ class Vocabulary:
 
     def __len__(self):
         return len(self._index_to_word)
+
+
+class DnaVocabulary(Vocabulary):
+    def __init__(self, kmer: int = 1):
+        super().__init__(dna(kmer))
