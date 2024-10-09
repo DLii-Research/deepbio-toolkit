@@ -16,148 +16,133 @@ from ..._utils import export
 class ContrastivePretrainingModel(L.LightningModule):
     def __init__(
         self,
-        encoders: Union[Sequence[nn.Module], Dict[Any, nn.Module]],
-        projection_dims: Union[int, Sequence[int], Dict[Any, int]],
-        embed_dim: int,
-        shared_projections: bool = False,
+        encoder_a: nn.Module,
+        encoder_b: nn.Module,
+        embed_dim_a: int,
+        embed_dim_b: int,
+        projection_dim: Optional[int] = None,
+        shared_projections: Optional[bool] = None,
         max_temp: float = 100.0
     ):
         super().__init__()
-        if shared_projections:
-            w = [nn.Linear(projection_dims, embed_dim, bias=False)]*len(encoders) # type: ignore
-        else:
-            w = [nn.Linear(d, embed_dim, bias=False) for d in projection_dims] # type: ignore
-        if isinstance(encoders, dict):
-            self.encoders = nn.ModuleDict(encoders)
-            self.w = nn.ModuleDict(dict(zip(self.encoders.keys(), w)))
-        else:
-            self.encoders = nn.ModuleList(tuple(encoders))
-            self.w = nn.ModuleList(w)
-        self.embed_dim = embed_dim
-        self.max_temp = max_temp
+
+        if encoder_a is encoder_b:
+            assert shared_projections is not False, "Shared projections are required for one encoder."
+            shared_projections = True
+        self.encoder_a = encoder_a
+        self.encoder_b = encoder_b
+        self.embed_dim_a = embed_dim_a
+        self.embed_dim_b = embed_dim_b
         self.shared_projections = shared_projections
-        self.t = nn.Parameter(torch.tensor(1.0))
+        self.projection_dim = projection_dim if projection_dim is not None else min(embed_dim_a, embed_dim_b)
+        self.max_temperature = max_temp
+        # Parameters
+        self.temperature = nn.Parameter(torch.tensor(1.0))
+        self.w_a = self.w_b = nn.Linear(self.embed_dim_a, self.projection_dim, bias=False)
+        if not self.shared_projections:
+            self.w_b = nn.Linear(self.embed_dim_b, self.projection_dim, bias=False)
+
+        for stage in ["training", "validation", "testing"]:
+            setattr(self, f"{stage}_step", partial(self._step, stage=stage))
 
     def forward(self, batch):
-        if isinstance(batch, dict):
-            features = [
-                self.w[key](self.encoders[key](x)) for key, x in batch.items()
-            ]
-        else:
-            features = [
-                w(encoder(x)) for encoder, w, x in zip(self.encoders, self.w, batch) # type: ignore
-            ]
-        embeddings = [F.normalize(f, p=2, dim=1) for f in features]
-        if isinstance(batch, dict):
-            return dict(zip(batch.keys(), embeddings))
-        return embeddings
+        a, b = batch
+        return torch.stack([
+            F.normalize(self.w_a(self.encode_a(a)), p=2, dim=-1),
+            F.normalize(self.w_b(self.encode_b(b)), p=2, dim=-1)
+        ])
 
-    def _step(self, stage: str, batch):
-        embeddings = self(batch)
-        comparisons = list(combinations(embeddings, 2))
-        loss = 0.0
-        for a, b in comparisons:
-            logits = torch.tensordot(a, b.T, 1)
-            labels = torch.arange(a.size(0)).to(logits.device)
-            loss_a = F.cross_entropy(logits * torch.exp(self.t), labels)
-            loss_b = F.cross_entropy(logits.T * torch.exp(self.t), labels)
-            loss += (loss_a + loss_b) / 2
-        loss /= len(comparisons)
-        self.log(f"{stage}/loss", loss)
+    def _step(self, batch, stage: str,):
+        a, b = self.all_gather(self(batch), sync_grads=True)
+        logits = torch.tensordot(a, b.transpose(-1, -2), a.ndim - 1)
+        labels = torch.arange(a.size(0), device=logits.device)
+        loss_a = F.cross_entropy(logits * torch.exp(self.temperature), labels)
+        loss_b = F.cross_entropy(logits.transpose(-1, -2) * torch.exp(self.temperature), labels)
+        loss += (loss_a + loss_b) / 2
+        accuracy = torch.sum(
+            (torch.argmax(logits, dim=-1) == labels) + (torch.argmax(logits, dim=-2) == labels)
+        ) / 2.0 / x.size(0)
+        self.log(f"{stage}/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log(f"{stage}/accuracy", accuracy, on_step=True, on_epoch=True, prog_bar=True)
         return loss
 
-    def training_step(self, batch):
-        return self._step("train", batch)
-
-    def validation_step(self, batch):
-        return self._step("val", batch)
-
-    def test_step(self, batch):
-        return self._step("test", batch)
+    def on_train_batch_end(self, *args, **kwargs):
+        self.temperature.data = torch.clamp(self.temperature, 0.0, self.max_temp)
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=1e-4)
 
-# Encoders -----------------------------------------------------------------------------------------
+# @export
+# class ContrastivePretrainingModel(L.LightningModule):
+#     def __init__(
+#         self,
+#         encoders: Union[Sequence[nn.Module], Dict[Any, nn.Module]],
+#         projection_dims: Union[int, Sequence[int], Dict[Any, int]],
+#         embed_dim: Optional[int] = None,
+#         shared_projections: bool = False,
+#         max_temp: float = 100.0
+#     ):
+#         super().__init__()
+#         if len(set(map(id, encoders))) == 1: # All the same encoder, use shared projections
+#             shared_projections = True
+#         if shared_projections:
+#             w = [nn.Linear(projection_dims, embed_dim, bias=False)]*len(encoders) # type: ignore
+#         else:
+#             w = [nn.Linear(d, embed_dim, bias=False) for d in projection_dims] # type: ignore
+#         if isinstance(encoders, dict):
+#             self.encoders = nn.ModuleDict(encoders)
+#             self.w = nn.ModuleDict(dict(zip(self.encoders.keys(), w)))
+#         else:
+#             self.encoders = nn.ModuleList(tuple(encoders))
+#             self.w = nn.ModuleList(w)
+#         self.embed_dim = embed_dim
+#         self.max_temp = max_temp
+#         self.shared_projections = shared_projections
+#         self.t = nn.Parameter(torch.tensor(1.0))
 
-@export
-class DnaTransformerModel(LightningModule):
-    def __init__(
-        self,
-        transformer_encoder: layers.TransformerEncoder,
-        kmer: int = 1,
-        kmer_stride: int = 1
-    ):
-        super().__init__()
-        self.transformer_encoder = transformer_encoder
-        self.kmer = kmer
-        self.kmer_stride = kmer_stride
-        self.class_token = nn.Parameter(torch.randn(self.transformer_encoder.embed_dim))
-        self.vocabulary = Vocabulary(dna(kmer))
+#     def forward(self, batch):
+#         if isinstance(batch, dict):
+#             features = [
+#                 self.w[key](self.encoders[key](x)) for key, x in batch.items()
+#             ]
+#         else:
+#             features = [
+#                 w(encoder(x)) for encoder, w, x in zip(self.encoders, self.w, batch) # type: ignore
+#             ]
+#         embeddings = [F.normalize(f, p=2, dim=1) for f in features]
+#         if isinstance(batch, dict):
+#             return dict(zip(batch.keys(), embeddings))
+#         return embeddings
 
-    def forward(
-        self,
-        src: torch.Tensor,
-        src_key_padding_mask: Optional[torch.Tensor] = None,
-        attention_head_mask: Optional[torch.Tensor] = None,
-        average_attention_weights: bool = True,
-        return_attention_weights: bool = False,
-        **kwargs
-    ):
-        class_tokens = self.class_token.expand(*src.shape[:-2], 1, -1)
-        src = torch.cat((class_tokens, src), -2)
-        output = self.transformer_encoder(
-            src,
-            src_key_padding_mask=src_key_padding_mask,
-            attention_head_mask=attention_head_mask,
-            average_attention_weights=average_attention_weights,
-            return_attention_weights=return_attention_weights,
-            **kwargs
-        )
-        output, *extra = output if isinstance(output, tuple) else (output,)
-        class_tokens = output.select(-2, 0)
-        output_tokens = output.narrow(-2, 1, src.shape[-2] - 1)
-        return class_tokens, output_tokens, *extra
+#     def _step(self, stage: str, batch):
+#         embeddings = self(batch)
+#         comparisons = list(combinations(embeddings, 2))
+#         loss = 0.0
+#         accuracy = 0.0
+#         for a, b in comparisons:
+#             logits = torch.tensordot(a, b.T, 1)
+#             labels = torch.arange(a.size(0)).to(logits.device)
+#             loss_a = F.cross_entropy(logits * torch.exp(self.t), labels)
+#             loss_b = F.cross_entropy(logits.transpose(-1, -2) * torch.exp(self.t), labels)
+#             loss += (loss_a + loss_b) / 2
+#             torch.sum(torch.argmax(logits, dim=-2) == labels)
+#             accuracy += torch.sum(
+#                 (torch.argmax(logits, dim=-1) == labels) + (torch.argmax(logits, dim=-2) == labels)
+#             ) / 2.0 / x.size(0)
+#         loss /= len(comparisons)
+#         accuracy /= len(comparisons)
+#         self.log(f"{stage}/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+#         self.log(f"{stage}/accuracy", accuracy, on_step=True, on_epoch=True, prog_bar=True)
+#         return loss
 
+#     def training_step(self, batch):
+#         return self._step("train", batch)
 
-@export
-class AmpliconSampleTransformerModel(LightningModule):
-    def __init__(
-        self,
-        transformer_encoder: layers.TransformerEncoder,
-        dna_encoder: nn.Module,
-        vocabulary: Vocabulary,
-    ):
-        super().__init__()
-        self.transformer_encoder = transformer_encoder
-        self.dna_encoder = dna_encoder
-        self.vocabulary = vocabulary
+#     def validation_step(self, batch):
+#         return self._step("validation", batch)
 
-    def forward(
-        self,
-        src: torch.Tensor,
-        src_key_padding_mask: Optional[torch.Tensor] = None,
-        attention_head_mask: Optional[torch.Tensor] = None,
-        average_attention_weights: bool = True,
-        return_attention_weights: bool = False,
-        **kwargs
-    ):
-        if not src.is_floating_point() and self.dna_encoder is not None:
-            # Needs to be encoded.
-            pad_id = self.vocabulary["[PAD]"]
-            if src_key_padding_mask is None:
-                src_key_padding_mask = torch.all(src == pad_id, -1)
-            with torch.no_grad():
-                src = self.dna_encoder(src)
-        output = self.transformer_encoder(
-            src,
-            src_key_padding_mask=src_key_padding_mask,
-            attention_head_mask=attention_head_mask,
-            average_attention_weights=average_attention_weights,
-            return_attention_weights=return_attention_weights,
-            **kwargs
-        )
-        output, *extra = output if isinstance(output, tuple) else (output,)
-        class_tokens = output.select(-2, 0)
-        output_tokens = output.narrow(-2, 1, src.shape[-2] - 1)
-        return class_tokens, output_tokens, *extra
+#     def test_step(self, batch):
+#         return self._step("test", batch)
+
+#     def configure_optimizers(self):
+#         return torch.optim.Adam(self.parameters(), lr=1e-4)
