@@ -4,13 +4,13 @@ from pathlib import Path
 import re
 from typing import Union
 
-class FastaFile:
+class Fasta:
     """
     An indexable memory-mapped interface for FASTA files.
     """
     @dataclass
     class Entry:
-        _fasta_file: "FastaFile"
+        _fasta_file: "Fasta"
         _id_start: int
         _id_end: int
         _sequence_start: int

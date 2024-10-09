@@ -1,11 +1,10 @@
-from collections import Iterable
 from dnadb.fasta import FastaDb, FastaMappingEntry
 from dnadb.taxonomy import TaxonomyDb
 from pathlib import Path
 from torch.utils.data import Dataset
-from typing import Callable, Optional, Union
+from typing import Callable, Iterable, Optional, Union
 
-from .containers import Fasta
+from .interfaces import Fasta
 
 class AmpliconSampleDataset(Dataset):
     def __init__(
