@@ -4,8 +4,8 @@ import torch
 import torch.nn.functional as F
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from .vocabularies import Vocabulary
-from .._utils import export, static_vars
+from ..vocabularies import Vocabulary
+from ..._utils import export, static_vars
 
 # Funtional ----------------------------------------------------------------------------------------
 
@@ -181,6 +181,14 @@ class RandomTokenMask:
             "tokens": tokens,
             "masked_tokens": masked
         }
+
+@export
+class Tokenize():
+    def __init__(self, tokenizer: Callable):
+        self.tokenizer = tokenizer
+
+    def __call__(self, string):
+        return tuple(self.tokenizer(string))
 
 
 @export
