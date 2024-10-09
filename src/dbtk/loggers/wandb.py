@@ -1,6 +1,7 @@
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger as WandbLoggerBase
 from lightning.pytorch.loggers.utilities import _scan_checkpoints
+from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from typing_extensions import override
 
 from .._utils import export
@@ -15,6 +16,8 @@ class WandbLogger(WandbLoggerBase):
         return the directory of the experiment instead of the directory of the
         logger.
         """
+        if rank_zero_only.rank > 0:
+            return None
         return self.experiment.dir
 
     @override
