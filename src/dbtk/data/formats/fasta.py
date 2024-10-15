@@ -1,10 +1,8 @@
 from dataclasses import dataclass
-import io
 import mmap
 from pathlib import Path
 import re
-from typing import Union
-from typing_extensions import Buffer
+from typing import Generator, Optional, Union
 
 from ..._utils import export
 
@@ -23,15 +21,15 @@ class Fasta:
 
         @property
         def id(self) -> str:
-            return self._fasta_file._read(self._id_start, self._id_end)
+            return self._fasta_file.data[self._id_start:self._id_end].decode()
 
         @property
         def metadata(self) -> str:
-            return self._fasta_file._read(self._id_end+1, self._sequence_start-1)
+            return self._fasta_file.data[self._id_end+1:self._sequence_start-1].decode()
 
         @property
         def sequence(self) -> str:
-            return self._fasta_file._read(self._sequence_start, self._sequence_end)
+            return self._fasta_file.data[self._sequence_start:self._sequence_end].decode()
 
         def __len__(self) -> int:
             return len(self.sequence)
@@ -42,32 +40,25 @@ class Fasta:
         def __repr__(self) -> str:
             return "Entry:\n" + str(self)
 
-    @classmethod
-    def open(cls, path: Union[Path, str]):
-        with open(path, 'r+') as f:
-            return cls(mmap.mmap(f.fileno(), 0))
-
-    def __init__(self, data: Union[str, mmap.mmap]):
-        self.data = data
+    def __init__(self, path: Union[Path, str], madvise: Optional[int] = None):
+        with open(path, "r+") as f:
+            self.data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        if madvise is not None:
+            self.data.madvise(madvise)
         self.entries = []
         self.id_map = {}
         # Lazy reading
         self._length = None
-        if isinstance(self.data, str):
-            pattern = re.compile(r">[^>]+")
-            self._read = lambda start, end: self.data[start:end]
-        else:
-            pattern = re.compile(br">[^>]+")
-            self._read = lambda start, end: self.data[start:end].decode() # type: ignore
-        self._reader = re.finditer(pattern, self.data) # type: ignore
+        self._reader = re.finditer(br">(\S+).*\n(\S+)", self.data)
         self._eof = False
+        self._closed = False
 
-    def __iter__(self):
+    def __iter__(self) -> Generator[Entry, None, None]:
         yield from self.entries
         while self._read_next_entry():
             yield self.entries[-1]
 
-    def __getitem__(self, key):
+    def __getitem__(self, key) -> Entry:
         if not isinstance(key, int):
             while key not in self.id_map and self._read_next_entry():
                 continue
@@ -79,35 +70,45 @@ class Fasta:
 
     def __len__(self):
         if self._length is None:
-            pattern = ">" if isinstance(self.data, str) else b">"
-            self._length = sum(1 for _ in re.finditer(pattern, self.data))
+            self._length = sum(1 for _ in re.finditer(b">", self.data))
             if self._length == len(self.entries):
                 self._clean_lazy_loading()
         return self._length
 
-    def _read(self, start: int, end: int):
-        return self.data[start:end].decode()
+    def __enter__(self):
+        pass
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def close(self):
+        if isinstance(self.data, str):
+            return
+        self._reader = None
+        self.data.close()
+        self._closed = True
 
     def _read_next_entry(self):
         try:
-            match = next(self._reader)
-            group = match.group()
-            header_end = group.find('\n')
-            sequence_id_length = ((group.find(' ') + 1) or (header_end + 1)) - 1
-            sequence_id_start = match.start() + 1
-            sequence_id_end = match.start() + sequence_id_length
-            sequence_start = match.start() + header_end + 1
-            sequence_end = match.end()
-            if group.endswith('\n'):
-                sequence_end -= 1
-            self.entries.append(self.Entry(self, sequence_id_start, sequence_id_end, sequence_start, sequence_end))
-            self.id_map[group[1:sequence_id_length]] = len(self.id_map)
+            match = next(self._reader) # type: ignore
+            self.id_map[match.group(1).decode()] = len(self.id_map)
+            self.entries.append(
+                self.Entry(
+                    self,
+                    *match.span(1), # (seq id start, seq id end)
+                    *match.span(2)  # (seq start, seq end)
+                )
+            )
         except StopIteration:
             self._length = len(self.entries)
+        except TypeError as exception:
+            if self._closed:
+                exception = Exception("Cannot read from closed file")
+            raise exception
         if not self._eof and self._length == len(self.entries):
             self._eof = True
             self._clean_lazy_loading()
         return not self._eof
 
     def _clean_lazy_loading(self):
-        self.__getitem__ = lambda k: self.entries[self.id_map[k] if isinstance(k, str) else k]
+        self.__getitem__ = lambda k: self.entries[self.id_map[k] if isinstance(k, str) else k] # type: ignore

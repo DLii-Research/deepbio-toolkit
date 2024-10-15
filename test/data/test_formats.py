@@ -1,4 +1,5 @@
 import numpy as np
+import tempfile
 import unittest
 import unittest.mock
 
@@ -16,18 +17,25 @@ def generate_iupac_sequence(length: int, rng: np.random.Generator):
 def generate_protein_sequence(length: int, rng: np.random.Generator):
     return "".join(rng.choice(list("ACDEFGHIKLMNPQRSTVWY"), length))
 
-class TestFastaStr(unittest.TestCase):
+class TestFasta(unittest.TestCase):
     def setUp(self):
         self.rng = np.random.default_rng(42)
         self.n_sequences = 10
         self.identifiers = [f"seq{i}" for i in range(self.n_sequences)]
         self.sequences = [generate_dna_sequence(30, self.rng) for _ in range(self.n_sequences)]
         self.metadata = [f"Metadata {i}" for i in range(self.n_sequences)]
-        self.fasta_file = "\n".join([
-            f">{i} {m}\n{s}"
-            for i, s, m in zip(self.identifiers, self.sequences, self.metadata)
-        ])
-        self.fasta = Fasta(self.fasta_file)
+        # Write temporary FASAT file
+        self.directory = tempfile.TemporaryDirectory()
+        with open(self.directory.name + "/test.fasta", "w") as f:
+            f.write("\n".join([
+                f">{i} {m}\n{s}"
+                for i, s, m in zip(self.identifiers, self.sequences, self.metadata)
+            ]))
+        self.fasta = Fasta(self.directory.name + "/test.fasta")
+
+    def tearDown(self):
+        self.fasta.close()
+        self.directory.cleanup()
 
     def test_lazy_length(self):
         # Ensure stored length is 0
