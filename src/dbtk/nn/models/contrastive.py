@@ -19,6 +19,18 @@ class ContrastivePretrainingModel(L.LightningModule):
         shared_projections: Optional[bool] = None,
         max_temperature: float = 100.0
     ):
+        """
+        Create a contrastive pretraining model.
+
+        Args:
+            encoder_a (nn.Module): The first encoder.
+            encoder_b (nn.Module): The second encoder.
+            embed_dim_a (int): The dimensionality of the first encoder embeddings.
+            embed_dim_b (int): The dimensionality of the second encoder embeddings.
+            projection_dim (Optional[int], optional): The dimensionality to project embeddings to before comparing. Defaults to smallest of `embed_dim_a` and `embed_dim_b`.
+            shared_projections (Optional[bool], optional): Use shared projection weights. Defaults to False.
+            max_temperature (float, optional): The maximum temperature value. Defaults to 100.0.
+        """
         super().__init__()
 
         if encoder_a is encoder_b:
@@ -28,7 +40,7 @@ class ContrastivePretrainingModel(L.LightningModule):
         self.encoder_b = encoder_b
         self.embed_dim_a = embed_dim_a
         self.embed_dim_b = embed_dim_b
-        self.shared_projections = shared_projections
+        self.shared_projections = shared_projections if shared_projections is not None else False
         self.projection_dim = projection_dim if projection_dim is not None else min(embed_dim_a, embed_dim_b)
         self.max_temperature = max_temperature
         # Parameters
