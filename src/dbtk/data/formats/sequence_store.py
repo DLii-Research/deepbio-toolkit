@@ -6,15 +6,13 @@ from bitarray.util import (
     deserialize as bitarray_deserialize
 )
 from collections import Counter
-from dataclasses import dataclass
 import deflate
-import io
 import mmap
 import numpy as np
 from pathlib import Path
 import pickle
 from tqdm import tqdm
-from typing import cast, Iterable, List, Literal, Optional, Type, Union
+from typing import cast, Iterable, List, Optional, Type, Union
 
 from ..._utils import export
 
