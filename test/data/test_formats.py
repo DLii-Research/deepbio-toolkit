@@ -3,19 +3,10 @@ import tempfile
 import unittest
 import unittest.mock
 
-from dbtk.data.formats import Fasta
+from dbtk.data.formats import Fasta, SequenceStore
 
 def generate_dna_sequence(length: int, rng: np.random.Generator):
-    return "".join(rng.choice(list("ACGT"), length))
-
-def generate_rna_sequence(length: int, rng: np.random.Generator):
-    return "".join(rng.choice(list("ACGU"), length))
-
-def generate_iupac_sequence(length: int, rng: np.random.Generator):
-    return "".join(rng.choice(list("ACGTURYSWKMBDHVN"), length))
-
-def generate_protein_sequence(length: int, rng: np.random.Generator):
-    return "".join(rng.choice(list("ACDEFGHIKLMNPQRSTVWY"), length))
+    return "".join(rng.choice(list("ACGTN"), length))
 
 class TestFasta(unittest.TestCase):
     def setUp(self):
@@ -76,6 +67,82 @@ class TestFasta(unittest.TestCase):
         for i, entry in enumerate(self.fasta):
             self.assertEqual(entry.id, self.identifiers[i])
         self.assertTrue(self.fasta._eof)
+
+
+class TestSequenceStoreDeflateCompression(unittest.TestCase):
+    def setUp(self):
+        self.rng = np.random.default_rng(42)
+        self.n_sequences = 10
+        self.sequences = [generate_dna_sequence(30, self.rng) for _ in range(self.n_sequences)]
+        # Write temporary sequence store
+        self.compression = SequenceStore.DeflateCompression.from_data(self.sequences)
+
+    def test_compression(self):
+        for sequence in self.sequences:
+            compressed = self.compression.compress(sequence)
+            decompressed = self.compression.decompress(compressed)
+            self.assertEqual(decompressed, sequence)
+
+
+class TestSequenceStoreHuffmanCompression(unittest.TestCase):
+    def setUp(self):
+        self.rng = np.random.default_rng(42)
+        self.n_sequences = 10
+        self.sequences = [generate_dna_sequence(30, self.rng) for _ in range(self.n_sequences)]
+        # Write temporary sequence store
+        self.compression = SequenceStore.HuffmanCompression.from_data(self.sequences)
+
+    def test_compression(self):
+        for sequence in self.sequences:
+            compressed = self.compression.compress(sequence)
+            decompressed = self.compression.decompress(compressed)
+            self.assertEqual(decompressed, sequence)
+
+
+class TestSequenceStore(unittest.TestCase):
+    def compression_method(self):
+        return SequenceStore.HuffmanCompression
+
+    def setUp(self):
+        self.rng = np.random.default_rng(42)
+        self.n_sequences = 10
+        self.sequences = [generate_dna_sequence(30, self.rng) for _ in range(self.n_sequences)]
+        # Write temporary sequence store
+        self.directory = tempfile.TemporaryDirectory()
+        SequenceStore.create(
+            self.sequences,
+            self.directory.name + "/test.seq",
+            compression=self.compression_method()
+        )
+        self.sequence_store = SequenceStore(self.directory.name + "/test.seq")
+
+    def tearDown(self):
+        self.sequence_store.close()
+        self.directory.cleanup()
+
+    def test_version(self):
+        self.assertEqual(self.sequence_store.version, SequenceStore.VERSION)
+
+    def test_length(self):
+        self.assertEqual(len(self.sequence_store), self.n_sequences)
+
+    def test_compressor(self):
+        compression_method = self.compression_method()
+        if compression_method is None:
+            compression_method = SequenceStore.NoCompression
+        self.assertIsInstance(self.sequence_store.compressor, compression_method)
+
+    def test_get_sequence(self):
+        for i, sequence in enumerate(self.sequences):
+            self.assertEqual(self.sequence_store[i], sequence)
+
+class TestSequenceStoreDeflate(TestSequenceStore):
+    def compression_method(self):
+        return SequenceStore.DeflateCompression
+
+class TestSequenceStoreHuffman(TestSequenceStore):
+    def compression_method(self):
+        return SequenceStore.HuffmanCompression
 
 if __name__ == "__main__":
     unittest.main()
