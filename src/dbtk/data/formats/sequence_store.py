@@ -46,7 +46,6 @@ class SequenceStore:
 
     VERSION = 0x00000001
 
-
     class NoCompression(Compression):
 
         IDENTIFIER = np.uint8(0)
@@ -128,6 +127,15 @@ class SequenceStore:
     ):
         """
         Write a sequence store to the given file.
+
+        Phase 1: Stream sequences to disk
+          - Remove duplicates
+          - Analyze for compression to create compressor instance
+
+        Phase 2: Compress sequences on disk
+          - Track longest compressed length
+
+        Phase 3: Format into blocks and write to final format
         """
         sequences = list(sequences)
         # Instantiate compressor

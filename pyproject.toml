@@ -15,6 +15,7 @@ license = { file="LICENSE" }
 requires-python = ">=3.8"
 dependencies = [
   "bitarray",
+  "deflate",
   "lightning[pytorch-extra] >= 2.4.0",
   "numba >= 0.59.1",
   "tqdm"
