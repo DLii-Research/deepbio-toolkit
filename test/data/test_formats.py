@@ -68,81 +68,77 @@ class TestFasta(unittest.TestCase):
             self.assertEqual(entry.id, self.identifiers[i])
         self.assertTrue(self.fasta._eof)
 
-
-class TestSequenceStoreDeflateCompression(unittest.TestCase):
-    def setUp(self):
-        self.rng = np.random.default_rng(42)
-        self.n_sequences = 10
-        self.sequences = [generate_dna_sequence(30, self.rng) for _ in range(self.n_sequences)]
-        # Write temporary sequence store
-        self.compression = SequenceStore.DeflateCompression.from_data(self.sequences)
-
-    def test_compression(self):
-        for sequence in self.sequences:
-            compressed = self.compression.compress(sequence)
-            decompressed = self.compression.decompress(compressed)
-            self.assertEqual(decompressed, sequence)
-
-
-class TestSequenceStoreHuffmanCompression(unittest.TestCase):
-    def setUp(self):
-        self.rng = np.random.default_rng(42)
-        self.n_sequences = 10
-        self.sequences = [generate_dna_sequence(30, self.rng) for _ in range(self.n_sequences)]
-        # Write temporary sequence store
-        self.compression = SequenceStore.HuffmanCompression.from_data(self.sequences)
-
-    def test_compression(self):
-        for sequence in self.sequences:
-            compressed = self.compression.compress(sequence)
-            decompressed = self.compression.decompress(compressed)
-            self.assertEqual(decompressed, sequence)
-
-
 class TestSequenceStore(unittest.TestCase):
-    def compression_method(self):
-        return SequenceStore.HuffmanCompression
-
     def setUp(self):
         self.rng = np.random.default_rng(42)
         self.n_sequences = 10
-        self.sequences = [generate_dna_sequence(30, self.rng) for _ in range(self.n_sequences)]
-        # Write temporary sequence store
+        self.sequences = [generate_dna_sequence(self.rng.integers(10, 30), self.rng) for _ in range(self.n_sequences)]
         self.directory = tempfile.TemporaryDirectory()
-        SequenceStore.create(
-            self.sequences,
-            self.directory.name + "/test.seq",
-            compression=self.compression_method()
-        )
-        self.sequence_store = SequenceStore(self.directory.name + "/test.seq")
+        with SequenceStore.SequenceWriter(self.directory.name + "/test.seq") as writer:
+            for sequence in self.sequences:
+                writer.write(sequence)
+        self.store = SequenceStore(self.directory.name + "/test.seq")
 
     def tearDown(self):
-        self.sequence_store.close()
+        self.store.close()
         self.directory.cleanup()
 
-    def test_version(self):
-        self.assertEqual(self.sequence_store.version, SequenceStore.VERSION)
-
     def test_length(self):
-        self.assertEqual(len(self.sequence_store), self.n_sequences)
+        self.assertEqual(len(self.store), self.n_sequences)
+        self.assertEqual(len(self.store.sequences), self.n_sequences)
 
-    def test_compressor(self):
-        compression_method = self.compression_method()
-        if compression_method is None:
-            compression_method = SequenceStore.NoCompression
-        self.assertIsInstance(self.sequence_store.compressor, compression_method)
+    def test_has_all_sequences(self):
+        self.assertTrue(all(sequence in self.sequences for sequence in self.store))
+
+
+class TestSequenceStoreWithoutSequenceIds(TestSequenceStore):
+    def test_has_sequence_ids(self):
+        self.assertFalse(self.store.has_sequence_ids)
+
+    def test_number_of_sequence_id_buckets(self):
+        self.assertEqual(self.store._n_sequence_id_buckets, 0)
 
     def test_get_sequence(self):
         for i, sequence in enumerate(self.sequences):
-            self.assertEqual(self.sequence_store[i], sequence)
+            self.assertEqual(self.store[i], sequence)
 
-class TestSequenceStoreDeflate(TestSequenceStore):
-    def compression_method(self):
-        return SequenceStore.DeflateCompression
+    def test_get_sequences_from_slice(self):
+        # try a random slice
+        self.assertEqual(self.store[3:7], self.sequences[3:7])
 
-class TestSequenceStoreHuffman(TestSequenceStore):
-    def compression_method(self):
-        return SequenceStore.HuffmanCompression
+
+class TestSequenceStoreWithSequenceIds(TestSequenceStore):
+    def setUp(self):
+        self.rng = np.random.default_rng(42)
+        self.n_sequences = 10
+        self.identifiers = [f"seq{i}" for i in range(self.n_sequences)]
+        self.sequences = [generate_dna_sequence(self.rng.integers(10, 30), self.rng) for _ in range(self.n_sequences)]
+        self.directory = tempfile.TemporaryDirectory()
+        with SequenceStore.SequenceWriter(self.directory.name + "/test.seq") as writer:
+            for sequence, identifier in zip(self.sequences, self.identifiers):
+                writer.write(sequence, identifier)
+        self.store = SequenceStore(self.directory.name + "/test.seq")
+
+    def test_has_sequence_ids(self):
+        self.assertTrue(self.store.has_sequence_ids)
+
+    def test_has_all_sequence_ids(self):
+        self.assertTrue(all(identifier in self.identifiers for identifier in self.store.sequence_ids))
+
+    def test_number_of_sequence_id_buckets(self):
+        self.assertGreater(self.store._n_sequence_id_buckets, 0)
+
+    def test_get_sequence(self):
+        for sequence, identifier in zip(self.sequences, self.identifiers):
+            i = self.store.lookup(identifier)
+            self.assertEqual(self.store[i], sequence)
+
+    def test_get_sequence_from_identifier(self):
+        for sequence, identifier in zip(self.sequences, self.identifiers):
+            self.assertEqual(self.store[identifier], sequence)
+
+    def test_get_sequence_ids_from_slice(self):
+        self.assertTrue(all(identifier in self.identifiers for identifier in self.store.sequence_ids[3:7]))
 
 if __name__ == "__main__":
     unittest.main()
