@@ -20,8 +20,9 @@ import mmap
 import numpy as np
 from pathlib import Path
 import pickle
+import shelve
 from tqdm import tqdm
-from typing import Dict, Iterator, List, Optional, overload, Union
+from typing import Dict, Iterator, List, Optional, overload, Tuple, Union
 from ..._utils import export
 
 def encode_string(string: str, huffman_codes: Dict[str, bitarray]) -> bytes:
@@ -128,10 +129,10 @@ class SequenceStore:
             self.sequence_id_bucket_ratio = sequence_id_bucket_ratio
             self.show_progress = show_progress
             # sequence -> sequence_id
-            self.sequences: Dict[str, str] = {}
+            self.sequences: Dict[str, Tuple[str, int]] = {}
             self.has_sequence_ids = False
 
-        def write(self, sequence: str, sequence_id: Optional[str] = None) -> bool:
+        def write(self, sequence: str, sequence_id: Optional[str] = None) -> int:
             """
             Write a sequence to the store.
 
@@ -140,16 +141,17 @@ class SequenceStore:
                 sequence_id (Optional[str], optional): The corresponding sequence identifier. Defaults to None.
 
             Returns:
-                bool: True if the sequence was written, False if it already exists
+                int: The index of the inserted sequence
             """
             if sequence in self.sequences:
-                return False
+                return self.sequences[sequence][1]
             if sequence_id is not None:
                 self.has_sequence_ids = True
             else:
                 assert not self.has_sequence_ids
-            self.sequences[sequence] = sequence_id if sequence_id is not None else ""
-            return True
+            sequence_id = sequence_id if sequence_id is not None else ""
+            self.sequences[sequence] = (sequence_id, len(self.sequences))
+            return self.sequences[sequence][1]
 
         def finish(self):
             """
@@ -179,14 +181,14 @@ class SequenceStore:
                 # Create a sequence ID hash table
                 n_sequence_id_buckets = int(self.sequence_id_bucket_ratio*len(sequences))
                 sequence_id_huffman_codes = huffman_code(Counter(chain.from_iterable(
-                    tqdm(
+                    map(lambda x: x[0], tqdm(
                         self.sequences.values(),
                         desc="Analyzing sequence IDs",
                         disable=(not self.show_progress)
-                    )
+                    ))
                 ))) # type: ignore
                 sequence_ids = [[] for _ in range(n_sequence_id_buckets)]
-                for i, sequence_id in enumerate(
+                for sequence_id, i in (
                     tqdm(
                         self.sequences.values(),
                         desc="Encoding sequence IDs",
