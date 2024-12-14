@@ -13,18 +13,13 @@ from ..._utils import export, static_vars
 def random_truncate(
     x,
     min_length: int,
-    max_length: int,
-    rng: np.random.Generator
+    max_length: int
 ) -> bytes:
     """
     Randomly truncate a DNA sequence string to the given min/max length.
     """
-    length = rng.integers(min(min_length, len(x)), min(max_length, len(x)) + 1)
-    try:
-        start = rng.integers(0, len(x) - length + 1)
-    except ValueError as e:
-        print(len(x), min_length, max_length, length)
-        raise e
+    length = torch.randint(min(min_length, len(x)), min(max_length, len(x)) + 1, (1,)).item()
+    start = torch.randint(0, len(x) - length + 1, (1,)).item()
     return x[start:start+length]
 
 
@@ -100,11 +95,8 @@ class RandomReverseComplement:
     """
     Randomly reverse complement a DNA sequence string.
     """
-    def __init__(self, rng: Optional[np.random.Generator] = None):
-        self.rng = rng or np.random.default_rng()
-
     def __call__(self, sequence):
-        if self.rng.random() < 0.5:
+        if torch.rand((1,)).item() < 0.5:
             return sequence
         return reverse_complement(sequence)
 
@@ -126,16 +118,38 @@ class RandomTruncate:
     def __init__(
         self,
         min_length: int,
-        max_length: Optional[int] = None,
-        rng: Optional[np.random.Generator] = None
+        max_length: Optional[int] = None
     ):
         self.min_length = min_length
         self.max_length = max_length
-        self.rng = rng or np.random.default_rng()
 
     def __call__(self, sequence):
         max_length = self.max_length if self.max_length is not None else len(sequence)
-        return random_truncate(sequence, self.min_length, max_length, self.rng)
+        return random_truncate(sequence, self.min_length, max_length)
+
+
+@export
+class RandomGroupedTruncate:
+    """
+    Randomly truncate a group of DNA sequence string to the given min/max length.
+    """
+    def __init__(
+        self,
+        min_length: int,
+        max_length: int
+    ):
+        self.min_length = min_length
+        self.max_length = max_length
+
+    def __call__(self, sequences):
+        length = torch.randint(self.min_length, self.max_length+1, (1,)).item()
+        print("Truncating to length:", length)
+        result = []
+        for sequence in sequences:
+            l = min(length, len(sequence))
+            offset = torch.randint(0, len(sequence) - l + 1, (1,)).item()
+            result.append(sequence[offset:offset+l])
+        return result
 
 
 @export
@@ -155,20 +169,18 @@ class RandomTokenMask:
     def __init__(
         self,
         ratio: float,
-        contiguous: bool = False,
-        rng: Optional[np.random.Generator] = None
+        contiguous: bool = False
     ):
         self.ratio = ratio
         self.contiguous = contiguous
-        self.rng = rng or np.random.default_rng()
         self._indices = self._contiguous_indices if self.contiguous else self._sparse_indices
 
     def _contiguous_indices(self, length, mask_length):
-        offset = self.rng.integers(length - mask_length + 1)
-        return np.arange(offset, offset + mask_length)
+        offset = torch.randint(0, length - mask_length + 1, (1,)).item()
+        return torch.arange(offset, offset + mask_length)
 
     def _sparse_indices(self, length, mask_length):
-        return self.rng.choice(length, mask_length, replace=False)
+        return torch.randperm(length)[:mask_length]
 
     def __call__(self, tokens):
         tokens = list(tokens)
