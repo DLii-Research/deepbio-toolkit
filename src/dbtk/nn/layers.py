@@ -85,7 +85,6 @@ class MultiHeadAttention(L.LightningModule):
     ) -> Union[torch.Tensor, None]:
         if key_padding_mask is not None:
             key_padding_mask = key_padding_mask.unsqueeze(-2)
-            # key_padding_mask = torch.repeat_interleave(key_padding_mask.unsqueeze(-2), key_padding_mask.shape[-1], -2) # type: ignore
         if attention_mask is None:
             return key_padding_mask
         if key_padding_mask is None:
@@ -636,7 +635,7 @@ class TransformerDecoder(ITransformerDecoder, L.LightningModule):
 
 
 @export
-class ConditionedInducedSetAttentionBlock(TransformerDecoderBlock):
+class ConditionedInducedSetAttentionBlock(ITransformerDecoder, L.LightningModule):
     def __init__(
         self,
         mha: MultiHeadAttention,
@@ -646,7 +645,7 @@ class ConditionedInducedSetAttentionBlock(TransformerDecoderBlock):
         norm_first: bool = True,
         dropout: float = 0.1,
     ):
-        super().__init__(mha, feedforward_dim, feedforward_activation, norm_first, dropout)
+        super().__init__()
         self.num_inducing_points = num_inducing_points
         self.inducing_point_predictor = nn.Linear(mha.embed_dim, mha.embed_dim*num_inducing_points)
         self.mab1 = MultiHeadAttentionBlock(copy.deepcopy(mha), feedforward_dim, feedforward_activation, norm_first, dropout)
@@ -670,24 +669,9 @@ class ConditionedInducedSetAttentionBlock(TransformerDecoderBlock):
         if memory_key_padding_mask is not None:
             raise Exception(f"Memory key padding mask not supported for {self.__class__}")
         i = self.inducing_point_predictor(memory).view(*memory.shape[:-1], self.num_inducing_points, -1)
-        h = self.mab1(i, target, attention_mask=target_key_padding_mask)
+        h = self.mab1(i, target, key_padding_mask=target_key_padding_mask)
         return self.mab2(target, h, average_attention_weights=average_attention_weights, return_attention_weights=return_attention_weights)
 
     @property
     def embed_dim(self):
         return self.mab1.embed_dim
-
-# Miscellaneous
-
-@export
-class SampleSet(L.LightningModule):
-    def __init__(self, embed_dim: int, max_set_size: int):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.max_set_size = max_set_size
-        self.mu = nn.Parameter(torch.randn(max_set_size, embed_dim))
-        self.sigma = nn.Parameter(torch.abs(torch.randn(max_set_size, embed_dim)))
-
-    def forward(self, n: torch.Tensor, masked: bool = False):
-        batch_size = n.size(0)
-        torch.randperm()
