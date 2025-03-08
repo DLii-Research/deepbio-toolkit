@@ -1,19 +1,250 @@
 import abc
 import copy
+from explainable_attention.utils import flex_attention_with_scores, naive_flex_attention_with_scores
 import lightning as L
+import math
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.nn.modules.linear import NonDynamicallyQuantizableLinear
+from torch.nn.attention.flex_attention import flex_attention, _vmap_for_bhqkv
 import torch.nn.functional as F
-from typing import Any, Callable, cast, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Callable, cast, deprecated, List, Optional, Sequence, Tuple, TypeVar, Union
+import warnings
 
 from .._utils import export
 
-Mha = TypeVar("Mha", bound="MultiHeadAttention")
+try:
+    from torch._dynamo._trace_wrapped_higher_order_op import TransformGetItemToIndex
+except ImportError:
+    from torch._higher_order_ops.flex_attention import TransformGetItemToIndex
+
+_compiled_flex_attention = torch.compile(flex_attention)
 
 # Multi-head Attention Mechanisms ------------------------------------------------------------------
 
+class DataContainer:
+    """
+    A placeholder object for storing data without notifying torch module instance of changes.
+    """
+    ...
+
 @export
+class MultiheadAttention(nn.Module):
+
+    @staticmethod
+    def relative_positional_encoding() -> Callable:
+        def score_mod(score, b, h, q_idx, kv_idx):
+            return score + (q_idx - kv_idx)
+        return score_mod
+
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        dropout: float = 0.0,
+        bias: bool = True,
+        score_mod: Optional[Callable] = None,
+        block_mask = None,
+        head_embed_dim: Optional[int] = None,
+        device=None,
+        dtype=None,
+        _compile: bool = True
+    ):
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.score_mod = score_mod
+        self.block_mask = block_mask
+        self.bias = bias
+
+        if head_embed_dim is None:
+            assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads if head_embed_dim is not provided"
+            head_embed_dim = embed_dim // num_heads
+        self.head_embed_dim = head_embed_dim
+        assert self.dropout == 0.0, "Dropout is not currently supported."
+
+        # Default no-op score mod
+        if self.score_mod is None:
+            self.score_mod = lambda score, *_: score
+
+        # Parameters
+        self.in_proj_weight = nn.Parameter(
+            torch.randn((3 * embed_dim, self.head_embed_dim*num_heads), **factory_kwargs)
+        )
+        self.register_parameter("q_proj_weight", None)
+        self.register_parameter("k_proj_weight", None)
+        self.register_parameter("v_proj_weight", None)
+        if bias:
+            self.in_proj_bias = nn.Parameter(torch.randn(3 * self.head_embed_dim*num_heads, **factory_kwargs))
+        else:
+            self.register_parameter("in_proj_bias", None)
+        self.out_proj = NonDynamicallyQuantizableLinear(
+            self.head_embed_dim * num_heads, embed_dim, bias=bias, **factory_kwargs
+        )
+
+        # Flex Attention properties
+        self._data_container = DataContainer()
+        self._data_container.mask = None
+
+        # Score mod with masking function
+        def _score_mod_with_mask(score, b, h, q_idx, kv_idx):
+            score = self.score_mod(score, b, h, q_idx, kv_idx)
+            score = torch.where(self._data_container.mask[b, q_idx, kv_idx], score, float("-inf"))
+            return score
+        self._score_mod_with_mask = _score_mod_with_mask
+
+        if _compile:
+            self.compiled_flex_attention()
+        else:
+            self.eager_flex_attention()
+
+    def compiled_flex_attention(self):
+        self._flex_attention = torch.compile(flex_attention_with_scores)
+        return self
+
+    def eager_flex_attention(self):
+        # only use our eager implementation here. compiled version is
+        # extremely slow right now...
+        self._flex_attention = naive_flex_attention_with_scores
+        return self
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+        need_weights=True,
+        attn_mask: Optional[torch.Tensor] = None,
+        average_attn_weights=True,
+        is_causal=False
+    ) -> torch.Tensor:
+        b, n_q, _ = query.shape
+        _, n_k, _ = key.shape
+
+        # Compute linear projections
+        q, k, v = F._in_projection_packed(query, key, value, self.in_proj_weight, self.in_proj_bias)
+        q = q.view((b, n_q, self.num_heads, self.head_embed_dim)).transpose(-2, -3)
+        k = k.view((b, n_k, self.num_heads, self.head_embed_dim)).transpose(-2, -3)
+        v = v.view((b, n_k, self.num_heads, self.head_embed_dim)).transpose(-2, -3)
+
+        try:
+            # Compute attention mask
+            self._data_container.mask = self.merge_masks(attn_mask, key_padding_mask, query, _native=False)
+
+            # Determine score mod to use
+            score_mod = self.score_mod if self._data_container.mask is None else self._score_mod_with_mask
+
+            # Compute attention
+            attention = self._flex_attention(
+                q, k, v,
+                score_mod=score_mod,
+                block_mask=self.block_mask,
+                return_attention_scores=need_weights
+            )
+
+            if need_weights:
+                attention, attention_weights = attention
+            else:
+                attention_weights = None
+
+            # Output projection
+            attention = attention.transpose(-2, -3).reshape((b, n_q, self.num_heads*self.head_embed_dim)) # [b, n_q, d_k*num_heads]
+            output = self.out_proj(attention)
+
+            if need_weights:
+                if average_attn_weights:
+                    attention_weights = attention_weights.mean(-3)
+                return output, attention_weights
+            return output
+        finally:
+            # Remove the mask when we're done
+            self._data_container.mask = None
+
+    def merge_masks(
+        self,
+        attention_mask: Optional[torch.Tensor],
+        key_padding_mask: Optional[torch.Tensor],
+        query: torch.Tensor,
+        _native: bool = True
+    ) -> Union[torch.Tensor, None]:
+        if _native:
+            return nn.MultiheadAttention.merge_masks(self, attention_mask, key_padding_mask, query)
+        if key_padding_mask is not None:
+            b, n_q, _ = query.shape
+            key_padding_mask = key_padding_mask.view(b, 1, -1).expand(b, n_q, -1)
+        if attention_mask is None:
+            return key_padding_mask
+        if key_padding_mask is None:
+            return attention_mask
+        return attention_mask | key_padding_mask
+
+    @property
+    def batch_first(self) -> bool:
+        return True
+
+    @property
+    def _qkv_same_embed_dim(self) -> bool:
+        return True
+
+
+class TransformerEncoderLayer(nn.TransformerEncoderLayer):
+    """
+    Override the standard transformer encoder layer to use our own multihead attention
+    """
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        dim_feedforward: int = 2048,
+        dropout: float = 0.1,
+        activation: Union[str, Callable[[torch.Tensor], torch.Tensor]] = F.relu,
+        layer_norm_eps: float = 1e-5,
+        batch_first: Optional[bool] = None,
+        norm_first: bool = False,
+        bias: bool = True,
+        score_mod: Optional[Callable] = None,
+        block_mask = None,
+        dim_head: Optional[int] = None,
+        device=None,
+        dtype=None,
+        _compile: bool = False
+    ):
+        if batch_first is None:
+            warnings.warn("batch_first is not set, defaulting to True", UserWarning)
+        assert batch_first, "batch_first must be True"
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation=activation,
+            layer_norm_eps=layer_norm_eps,
+            batch_first=batch_first,
+            norm_first=norm_first,
+            bias=bias,
+            **factory_kwargs,)
+
+        self.self_attn = MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=nhead,
+            # dropout=dropout, not currently supported
+            bias=bias,
+            score_mod=score_mod,
+            block_mask=block_mask,
+            head_embed_dim=dim_head,
+            **factory_kwargs,
+            _compile=_compile
+        )
+
+# Deprecated layers after this point...
+
+@export
+@deprecated
 class MultiHeadAttention(L.LightningModule):
     def __init__(
         self,
@@ -111,6 +342,7 @@ class MultiHeadAttention(L.LightningModule):
 
 
 @export
+@deprecated
 class RelativeMultiHeadAttention(MultiHeadAttention):
     def __init__(
         self,
@@ -161,6 +393,7 @@ class RelativeMultiHeadAttention(MultiHeadAttention):
 # Transformer Generics -----------------------------------------------------------------------------
 
 @export
+@deprecated
 class MultiHeadAttentionBlock(L.LightningModule):
     def __init__(
         self,
@@ -260,6 +493,7 @@ class MultiHeadAttentionBlock(L.LightningModule):
 
 # Transformer Encoders -----------------------------------------------------------------------------
 
+@deprecated
 class ITransformerEncoder(abc.ABC, L.LightningModule):
     """
     The interface for a transformer encoder block.
@@ -282,6 +516,7 @@ class ITransformerEncoder(abc.ABC, L.LightningModule):
         return NotImplemented
 
 @export
+@deprecated
 class TransformerEncoderBlock(ITransformerEncoder, L.LightningModule):
     def __init__(
         self,
@@ -330,6 +565,7 @@ class TransformerEncoderBlock(ITransformerEncoder, L.LightningModule):
 
 
 @export
+@deprecated
 class InducedSetAttentionBlock(ITransformerEncoder, L.LightningModule):
     def __init__(
         self,
@@ -375,6 +611,7 @@ class InducedSetAttentionBlock(ITransformerEncoder, L.LightningModule):
         return self.mab1.mha.num_heads
 
 @export
+@deprecated
 class TransformerEncoder(ITransformerEncoder, L.LightningModule):
     def __init__(self, encoder_layer: ITransformerEncoder, num_layers: int):
         super().__init__()
@@ -435,6 +672,7 @@ class TransformerEncoder(ITransformerEncoder, L.LightningModule):
 
 # Transformer Decoders -----------------------------------------------------------------------------
 
+@deprecated
 class ITransformerDecoder(abc.ABC):
     """
     The interface for a transformer encoder block.
@@ -455,6 +693,7 @@ class ITransformerDecoder(abc.ABC):
 
 
 @export
+@deprecated
 class TransformerDecoderBlock(ITransformerDecoder, L.LightningModule):
 
     def __init__(
@@ -590,6 +829,7 @@ class TransformerDecoderBlock(ITransformerDecoder, L.LightningModule):
 
 
 @export
+@deprecated
 class TransformerDecoder(ITransformerDecoder, L.LightningModule):
     def __init__(self, decoder_layer: TransformerDecoderBlock, num_layers: int):
         super().__init__()
@@ -635,6 +875,7 @@ class TransformerDecoder(ITransformerDecoder, L.LightningModule):
 
 
 @export
+@deprecated
 class ConditionedInducedSetAttentionBlock(ITransformerDecoder, L.LightningModule):
     def __init__(
         self,

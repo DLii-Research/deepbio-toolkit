@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepbio-toolkit"
-version = "0.1.12"
+version = "0.2.0"
 authors = [
   { name="David W. Ludwig II", email="davidludwigii@gmail.com" }
 ]
@@ -14,11 +14,13 @@ readme = "README.md"
 license = { file="LICENSE" }
 requires-python = ">=3.8"
 dependencies = [
+  "attn-gym >= 0.0.4.dev11+gbf70245",
   "bitarray == 3.0.0",
   "deflate",
   "lightning[pytorch-extra] >= 2.4.0",
   "numba >= 0.59.1",
-  "tqdm"
+  "tqdm",
+  "torch >= 2.5.0",
 ]
 
 [project.scripts]
