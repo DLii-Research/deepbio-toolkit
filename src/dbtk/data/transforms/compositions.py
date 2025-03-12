@@ -1,6 +1,8 @@
+from functools import partial
 import numpy as np
-from typing import Callable, Optional
-from . import Compose
+import torch
+from typing import Callable, Optional, Union
+from . import Compose, Pad, RandomReverseComplement, RandomTruncate
 from ..vocabularies import DnaVocabulary, Vocabulary
 from ..._utils import export
 
@@ -77,3 +79,39 @@ class RandomDnaSequenceTransform(Compose):
                 )
             )
         return transforms
+
+
+@export
+class DnaSequenceTransform():
+    def __init__(
+        self,
+        min_length: Optional[int] = None,
+        max_length: Optional[int] = None,
+        reverse_complement: bool = True,
+        tokenizer: Optional[Callable[[str], torch.Tensor]] = None,
+        pad_token_id: Optional[int] = None,
+    ):
+        assert min_length is None or max_length is not None
+        if min_length is None:
+            min_length = max_length
+        self.min_length = min_length
+        self.max_length = max_length
+        self.reverse_complement = reverse_complement
+        self.tokenizer = tokenizer
+        self.pad_token_id = pad_token_id
+
+        # Build the transformation pipeline
+        pipeline = []
+        if self.max_length is not None:
+            pipeline.append(RandomTruncate(self.min_length, self.max_length))
+        if self.reverse_complement:
+            pipeline.append(RandomReverseComplement())
+        if self.tokenizer is not None:
+            pipeline.append(self.tokenizer)
+            pipeline.append(torch.tensor)
+            if self.pad_token_id is not None:
+                pipeline.append(Pad(self.max_length, self.pad_token_id))
+        self.pipeline = Compose(pipeline)
+
+    def __call__(self, sequence: Union[bytes, str]):
+        return self.pipeline(sequence)

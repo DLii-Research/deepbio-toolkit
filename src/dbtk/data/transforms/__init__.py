@@ -2,7 +2,7 @@ from itertools import chain, repeat
 import numpy as np
 import torch
 import torch.nn.functional as F
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, overload, Union
 
 from ..vocabularies import Vocabulary
 from ..._utils import export, static_vars
@@ -10,11 +10,25 @@ from ..._utils import export, static_vars
 # Funtional ----------------------------------------------------------------------------------------
 
 @export
+@overload
 def random_truncate(
-    x,
+    x: bytes,
+    min_length: int,
+    max_length: Optional[int] = None
+) -> bytes:
+    ...
+@overload
+def random_truncate(
+    x: str,
+    min_length: int,
+    max_length: Optional[int] = None
+) -> str:
+    ...
+def random_truncate(
+    x: Union[bytes, str],
     min_length: int,
     max_length: int
-) -> bytes:
+) -> Union[bytes, str]:
     """
     Randomly truncate a DNA sequence string to the given min/max length.
     """
@@ -24,11 +38,25 @@ def random_truncate(
 
 
 @export
+def random_truncate_codon_sequence(sequence, min_length, max_length):
+    """
+    Truncate the given codon sequence on either end to the given min and max length
+    """
+    min_length += (3 - min_length)%3
+    max_length -= max_length%3
+    length = torch.randint(min_length//3, max_length//3 + 1, (1,)).item()
+    start = 3*torch.randint(0, len(sequence)//3 - length + 1, (1,)).item()
+    return sequence[start:start+3*length]
+
+
+@export
 @static_vars(translation=bytes.maketrans(b"ACGT", b"TGCA"))
-def reverse_complement(sequence: bytes) -> bytes:
+def reverse_complement(sequence: Union[bytes, str]) -> Union[bytes, str]:
     """
     Randomly reverse complement a DNA sequence string.
     """
+    if isinstance(sequence, str):
+        return sequence.encode().translate(reverse_complement.translation).decode()[::-1]
     return sequence.translate(reverse_complement.translation)[::-1]
 
 
@@ -129,9 +157,27 @@ class RandomTruncate:
 
 
 @export
+class RandomTruncateCodonSequence:
+    """
+    Randomly truncate a codon sequence string to the given min/max length.
+    """
+    def __init__(
+        self,
+        min_length: int,
+        max_length: Optional[int] = None
+    ):
+        self.min_length = min_length
+        self.max_length = max_length
+
+    def __call__(self, sequence):
+        max_length = self.max_length if self.max_length is not None else len(sequence)
+        return random_truncate_codon_sequence(sequence, self.min_length, max_length)
+
+
+@export
 class RandomGroupedTruncate:
     """
-    Randomly truncate a group of DNA sequence string to the given min/max length.
+    Randomly truncate a group of DNA sequence strings to the given min/max length.
     """
     def __init__(
         self,
@@ -143,12 +189,34 @@ class RandomGroupedTruncate:
 
     def __call__(self, sequences):
         length = torch.randint(self.min_length, self.max_length+1, (1,)).item()
-        print("Truncating to length:", length)
         result = []
         for sequence in sequences:
             l = min(length, len(sequence))
             offset = torch.randint(0, len(sequence) - l + 1, (1,)).item()
             result.append(sequence[offset:offset+l])
+        return result
+
+
+@export
+class RandomGroupedTruncateCodonSequence:
+    """
+    Randomly truncate a group of codon sequence strings to the given min/max length.
+    """
+    def __init__(
+        self,
+        min_length: int,
+        max_length: int
+    ):
+        self.min_length = min_length + (3 - min_length)%3
+        self.max_length = max_length - max_length%3
+
+    def __call__(self, sequences):
+        length = torch.randint(self.min_length//3, self.max_length//3 + 1, (1,)).item()
+        result = []
+        for sequence in sequences:
+            l = min(length, len(sequence)//3)
+            offset = 3*torch.randint(0, len(sequence)//3 - l + 1, (1,)).item()
+            result.append(sequence[offset:offset+3*l])
         return result
 
 
