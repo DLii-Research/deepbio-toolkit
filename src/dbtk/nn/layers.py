@@ -9,10 +9,10 @@ import torch.nn as nn
 from torch.nn.modules.linear import NonDynamicallyQuantizableLinear
 from torch.nn.attention.flex_attention import flex_attention, _vmap_for_bhqkv
 import torch.nn.functional as F
-from typing import Any, Callable, cast, deprecated, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Callable, cast, List, Optional, Sequence, Tuple, TypeVar, Union
 import warnings
 
-from .._utils import export
+from .._utils import deprecated, export
 
 try:
     from torch._dynamo._trace_wrapped_higher_order_op import TransformGetItemToIndex
@@ -244,7 +244,7 @@ class TransformerEncoderLayer(nn.TransformerEncoderLayer):
 # Deprecated layers after this point...
 
 @export
-@deprecated
+@deprecated("")
 class MultiHeadAttention(L.LightningModule):
     def __init__(
         self,
@@ -342,7 +342,7 @@ class MultiHeadAttention(L.LightningModule):
 
 
 @export
-@deprecated
+@deprecated("")
 class RelativeMultiHeadAttention(MultiHeadAttention):
     def __init__(
         self,
@@ -393,7 +393,7 @@ class RelativeMultiHeadAttention(MultiHeadAttention):
 # Transformer Generics -----------------------------------------------------------------------------
 
 @export
-@deprecated
+@deprecated("")
 class MultiHeadAttentionBlock(L.LightningModule):
     def __init__(
         self,
@@ -493,7 +493,7 @@ class MultiHeadAttentionBlock(L.LightningModule):
 
 # Transformer Encoders -----------------------------------------------------------------------------
 
-@deprecated
+@deprecated("")
 class ITransformerEncoder(abc.ABC, L.LightningModule):
     """
     The interface for a transformer encoder block.
@@ -516,7 +516,7 @@ class ITransformerEncoder(abc.ABC, L.LightningModule):
         return NotImplemented
 
 @export
-@deprecated
+@deprecated("")
 class TransformerEncoderBlock(ITransformerEncoder, L.LightningModule):
     def __init__(
         self,
@@ -565,7 +565,7 @@ class TransformerEncoderBlock(ITransformerEncoder, L.LightningModule):
 
 
 @export
-@deprecated
+@deprecated("")
 class InducedSetAttentionBlock(ITransformerEncoder, L.LightningModule):
     def __init__(
         self,
@@ -611,7 +611,7 @@ class InducedSetAttentionBlock(ITransformerEncoder, L.LightningModule):
         return self.mab1.mha.num_heads
 
 @export
-@deprecated
+@deprecated("")
 class TransformerEncoder(ITransformerEncoder, L.LightningModule):
     def __init__(self, encoder_layer: ITransformerEncoder, num_layers: int):
         super().__init__()
@@ -672,7 +672,7 @@ class TransformerEncoder(ITransformerEncoder, L.LightningModule):
 
 # Transformer Decoders -----------------------------------------------------------------------------
 
-@deprecated
+@deprecated("")
 class ITransformerDecoder(abc.ABC):
     """
     The interface for a transformer encoder block.
@@ -693,7 +693,7 @@ class ITransformerDecoder(abc.ABC):
 
 
 @export
-@deprecated
+@deprecated("")
 class TransformerDecoderBlock(ITransformerDecoder, L.LightningModule):
 
     def __init__(
@@ -829,7 +829,7 @@ class TransformerDecoderBlock(ITransformerDecoder, L.LightningModule):
 
 
 @export
-@deprecated
+@deprecated("")
 class TransformerDecoder(ITransformerDecoder, L.LightningModule):
     def __init__(self, decoder_layer: TransformerDecoderBlock, num_layers: int):
         super().__init__()
@@ -875,7 +875,7 @@ class TransformerDecoder(ITransformerDecoder, L.LightningModule):
 
 
 @export
-@deprecated
+@deprecated("")
 class ConditionedInducedSetAttentionBlock(ITransformerDecoder, L.LightningModule):
     def __init__(
         self,
