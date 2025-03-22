@@ -21,5 +21,5 @@ def main():
             instance = getattr(module, subcommand_cls_name)
             instance.configure(module_subparsers.add_parser(instance.name, help=instance.__doc__))
             modules[module_name]["subcommands"][instance.name] = instance
-    config = parser.parse_args()
-    sys.exit(modules[config.module]["subcommands"][config.subcommand].run(config) or 0)
+    args = parser.parse_args()
+    sys.exit(modules[args.module]["subcommands"][args.subcommand].run(args) or 0)

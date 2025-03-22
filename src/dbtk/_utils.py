@@ -1,7 +1,8 @@
 import functools
+import importlib
 import inspect
 import sys
-from typing import Callable, ParamSpec, TypeVar
+from typing import Callable, ParamSpec, Type, TypeVar
 import warnings
 
 # Decorators ---------------------------------------------------------------------------------------
@@ -111,3 +112,8 @@ def export(fn):
     else:
         mod.__all__ = [fn.__name__] # type: ignore
     return fn
+
+def load_class(class_path: str) -> Type:
+    module_name, class_name = class_path.rsplit('.', 1)
+    module = importlib.import_module(module_name)
+    return getattr(module, class_name)
