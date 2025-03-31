@@ -95,6 +95,7 @@ class DbtkModel(PreTrainedModel, L.LightningModule):
         else:
             model_class = ".".join([model_instance.__class__.__module__, model_instance.__class__.__name__])
             model_config = model_instance.config
+
         setattr(self.config, config_key, model_config)
         setattr(self.config, class_key, model_class)
         setattr(self, model_key, model_instance)
