@@ -2,7 +2,7 @@ import importlib
 import lightning as L
 from pathlib import Path
 from transformers import AutoModel, PreTrainedModel, PretrainedConfig
-from typing import List, Optional, Union
+from typing import List, Optional, Type, Union
 
 class DbtkModel(PreTrainedModel, L.LightningModule):
     """
@@ -18,7 +18,7 @@ class DbtkModel(PreTrainedModel, L.LightningModule):
 
     class CustomConfig(PretrainedConfig):
         base: Optional[Union[str, Path, PretrainedConfig, PreTrainedModel]] = None
-        base_class: Optional[str] = None
+        base_class: Optional[str, Type[PreTrainedModel]] = None
 
     class CustomModel(DbtkModel):
         config_class = CustomConfig
@@ -67,6 +67,13 @@ class DbtkModel(PreTrainedModel, L.LightningModule):
             module_name, class_name = model_class.rsplit('.', 1)
             model_class = getattr(importlib.import_module(module_name), class_name)
         model_class: Optional[Type[PreTrainedModel]] = model_class
+
+        # If the config is a dictionary, create a PretrainedConfig or model_class.config_class instance
+        if isinstance(model_config, dict):
+            if model_class is None:
+                model_config = PretrainedConfig.from_dict(model_config)
+            else:
+                model_config = model_class.config_class.from_dict(model_config)
 
         # If a model class was provided without a config, instantiate with default config
         if model_class is not None and model_config is None:

@@ -27,13 +27,13 @@ class SequenceFilter:
             sequence_stream = tqdm(sequence_stream, desc="Analyzing sequences")
         for identifier, sequence in sequence_stream:
             sequence_hash = hashlib.sha256(sequence.encode()).digest()
-            # sequence_hash = sequence
-            if sequence_hash in self.sequence_index:
-                self.identifier_map[identifier] = self.sequence_index[sequence_hash]
-                continue
-            self.sequence_index[sequence_hash] = len(self.sequence_index)
+            seen = sequence_hash in self.sequence_index
+            if not seen:
+                self.sequence_index[sequence_hash] = len(self.sequence_index)
             self.sequence_count[sequence_hash] += 1
-            yield sequence
+            self.identifier_map[identifier] = self.sequence_index[sequence_hash]
+            if not seen:
+                yield sequence
 
 
 @subcommand("import_sequences", "Generate a random run ID.")
@@ -86,9 +86,9 @@ class ImportSequences(CliSubCommand):
                 prev = line
 
     def read(self, path: Path, prefix_sequence_ids: bool) -> Generator[Tuple[str, str], None, None]:
-        if path.suffix == ".fasta" or path.suffix == ".gz":
+        if path.name.rstrip(".gz").endswith(".fasta"):
             return self.read_fasta(path, prefix_sequence_ids)
-        if path.suffix == ".fastq" or path.suffix == ".gz":
+        if path.name.rstrip(".gz").endswith(".fastq"):
             return self.read_fastq(path, prefix_sequence_ids)
         raise ValueError(f"Unsupported file type: {path.suffix}")
 
@@ -108,21 +108,25 @@ class ImportSequences(CliSubCommand):
             print("Finishing up...")
         if config.output_id_map:
             with open(config.output.with_suffix(".idmap"), "wb") as f:
+                print("Writing", len(sequence_filter.identifier_map), "identifiers to ID map.")
                 pickle.dump(sequence_filter.identifier_map, f)
         if config.output_abundance_map:
             with open(config.output.with_suffix(".abundance"), "wb") as f:
-                counts = np.array(list(sequence_filter.sequence_count.values()), dtype=np.int64)
-                f.write(counts.tobytes())
+                unit = max(int(2**np.ceil(np.log2(np.ceil(np.log2(max(sequence_filter.sequence_count.values()))) + 1e-8))), 8)
+                index_dtype = getattr(np, f"uint{unit}")
+                counts = np.array(list(sequence_filter.sequence_count.values()), dtype=index_dtype)
+                f.write(np.uint8(unit).tobytes() + counts.tobytes())
         if not config.silent:
             print("Analyzed", sum(sequence_filter.sequence_count.values()), "sequences.")
             print("# Unique sequences:", len(sequence_filter.sequence_index))
-            print("# Duplicate sequences:", sum(1 for count in sequence_filter.sequence_count.values() if count > 1))
+            print("# Duplicate sequences:", sum(count for count in sequence_filter.sequence_count.values() if count > 1))
             print(f"{1-len(sequence_filter.sequence_index)/sum(sequence_filter.sequence_count.values()):.2%}% sequence reduction")
             print("")
 
             # print total file size reduction (including abundance and id map if present)
             total_input_size = sum(path.stat().st_size for path in config.input_paths)
             total_output_size = config.output.with_suffix(".seq").stat().st_size
+            percent_difference = 1 - total_output_size/total_input_size
             if config.output_id_map:
                 total_output_size += config.output.with_suffix(".idmap").stat().st_size
             if config.output_abundance_map:
@@ -139,7 +143,7 @@ class ImportSequences(CliSubCommand):
                 total_output_size /= 1024
                 i += 1
             print(f"Total output size: {total_output_size:.2f} {units[i]}")
-            print(f"{1-total_output_size/total_input_size:.2%}% file size reduction")
+            print(f"{percent_difference:.2%}% file size reduction")
 
             print("Done.")
 

@@ -33,5 +33,5 @@ class CliSubCommand(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def run(self, config: argparse.Namespace) -> int:
+    def run(self, args: argparse.Namespace) -> int:
         raise NotImplementedError
