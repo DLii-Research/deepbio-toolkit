@@ -1,11 +1,12 @@
 import argparse
+import importlib
 import inspect
 import json
-import torch
 import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint
 from pathlib import Path
 import sys
+import torch
 from transformers import PretrainedConfig, PreTrainedModel
 from typing import Any, Dict, Optional, Type
 from typing_extensions import override
@@ -36,10 +37,18 @@ class ConfigCommand(CliSubCommand):
             config_dict: The dictionary to clean, modified in place
         """
         base_config = PretrainedConfig().to_dict()
+        to_exclude = [
+            "model_type",
+            "is_composition",
+            "keys_to_ignore_at_inference",
+            "attribute_map",
+            "base_model_tp_plan",
+            "base_model_pp_plan",
+        ]
 
         # Remove default values from current level
         for key in list(config_dict.keys()):
-            if key in base_config and config_dict[key] == base_config[key]:
+            if key in to_exclude or (key in base_config and config_dict[key] == base_config[key]):
                 del config_dict[key]
             # Recursively clean nested configs
             elif hasattr(config, key):
@@ -60,9 +69,30 @@ class ConfigCommand(CliSubCommand):
             ValueError: If the model class has no config_class
         """
         if not hasattr(model_cls, 'config_class') or model_cls.config_class is None:
-            raise ValueError(f"Model class {model_cls.__name__} has no config_class")
+            raise ValueError(f"Model class {model_cls.__module__}.{model_cls.__name__} has no config_class")
 
+        # Generate the default config
         model_config = model_cls.config_class()
+
+        print("The model config", model_config)
+
+        # Fill in any sub-model configs
+        for sub_model in model_cls.sub_models:
+            sub_model_class = getattr(model_config, f"{sub_model}_class", None)
+            if sub_model_class is None:
+                setattr(model_config, sub_model, None)
+                setattr(model_config, f"{sub_model}_class", None)
+                continue
+            # Import submodel class if it's a string
+            if isinstance(sub_model_class, str):
+                module_name, class_name = sub_model_class.rsplit('.', 1)
+                sub_model_class = getattr(importlib.import_module(module_name), class_name)
+            # Generate submodel config
+            sub_model_config = self._generate_model_config(sub_model_class)
+            # Add submodel config to main config
+            setattr(model_config, sub_model, sub_model_config)
+            setattr(model_config, f"{sub_model}_class", f"{sub_model_class.__module__}.{sub_model_class.__name__}")
+
         config_dict = model_config.to_dict()
         self._clean_config_dict(model_config, config_dict)
 
@@ -190,69 +220,64 @@ class FitCommand(CliSubCommand):
                     print(f"Error loading config file {config_path}: {str(e)}", file=sys.stderr)
                     return 1
 
-        try:
-            # Parse the merged configuration
-            config = parse_config(merged_config)
+        # Parse the merged configuration
+        config = parse_config(merged_config)
 
-            # Extract components
-            model = config.get('model')
-            if not model:
-                print("Error: No model configuration found", file=sys.stderr)
-                return 1
-
-            datamodule = config.get('datamodule')
-            if not datamodule:
-                print("Error: No datamodule configuration found", file=sys.stderr)
-                return 1
-
-            trainer_config = config.get('train', {})
-
-            # Ensure checkpoint directory exists
-            args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            trainer_config['default_root_dir'] = str(args.checkpoint_dir)
-
-            # Setup checkpointing
-            checkpoint_callback = ModelCheckpoint(
-                dirpath=args.checkpoint_dir,
-                filename='model-{epoch:02d}-{step}',
-                save_last=True,  # Save latest model for resuming
-                every_n_epochs=1,
-                save_on_train_epoch_end=True
-            )
-
-            # Setup on exception checkpointing
-            exception_callback = L.pytorch.callbacks.OnExceptionCheckpoint(args.checkpoint_dir, "last")
-
-            # Setup config checkpointing
-            config_callback = ConfigCheckpoint(merged_config)
-
-            # Add checkpoint callback to existing callbacks
-            callbacks = trainer_config.pop('callbacks', []) or []
-            callbacks.append(checkpoint_callback)
-            callbacks.append(exception_callback)
-            callbacks.append(config_callback)
-            trainer_config['callbacks'] = callbacks
-
-            # Enable automatic checkpointing
-            trainer_config['enable_checkpointing'] = True
-
-            # Create trainer with checkpoint directory
-            trainer = L.Trainer(**trainer_config)
-
-            # Check for existing checkpoint
-            last_checkpoint = None
-            last_ckpt = args.checkpoint_dir / 'last.ckpt'
-            if last_ckpt.exists():
-                last_checkpoint = str(last_ckpt)
-                print(f"Resuming from checkpoint: {last_checkpoint}")
-
-            # Train the model
-            trainer.fit(model, datamodule=datamodule, ckpt_path=last_checkpoint)
-            return 0
-
-        except Exception as e:
-            print(f"Error during model training: {str(e)}", file=sys.stderr)
+        # Extract components
+        model = config.get('model')
+        if not model:
+            print("Error: No model configuration found", file=sys.stderr)
             return 1
+
+        datamodule = config.get('datamodule')
+        if not datamodule:
+            print("Error: No datamodule configuration found", file=sys.stderr)
+            return 1
+
+        trainer_config = config.get('train', {})
+
+        # Ensure checkpoint directory exists
+        args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        trainer_config['default_root_dir'] = str(args.checkpoint_dir)
+
+        # Setup checkpointing
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=args.checkpoint_dir,
+            filename='model-{epoch:02d}-{step}',
+            save_last=True,  # Save latest model for resuming
+            every_n_epochs=1,
+            save_on_train_epoch_end=True
+        )
+
+        # Setup on exception checkpointing
+        exception_callback = L.pytorch.callbacks.OnExceptionCheckpoint(args.checkpoint_dir, "last")
+
+        # Setup config checkpointing
+        config_callback = ConfigCheckpoint(merged_config)
+
+        # Add checkpoint callback to existing callbacks
+        callbacks = trainer_config.pop('callbacks', []) or []
+        callbacks.append(checkpoint_callback)
+        callbacks.append(exception_callback)
+        callbacks.append(config_callback)
+        trainer_config['callbacks'] = callbacks
+
+        # Enable automatic checkpointing
+        trainer_config['enable_checkpointing'] = True
+
+        # Create trainer with checkpoint directory
+        trainer = L.Trainer(**trainer_config)
+
+        # Check for existing checkpoint
+        last_checkpoint = None
+        last_ckpt = args.checkpoint_dir / 'last.ckpt'
+        if last_ckpt.exists():
+            last_checkpoint = str(last_ckpt)
+            print(f"Resuming from checkpoint: {last_checkpoint}")
+
+        # Train the model
+        trainer.fit(model, datamodule=datamodule, ckpt_path=last_checkpoint)
+        return 0
 
 
 @subcommand("export", "Export a model from a checkpoint to HuggingFace format.")
