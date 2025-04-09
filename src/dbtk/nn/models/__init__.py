@@ -1,8 +1,14 @@
 import importlib
 import lightning as L
 from pathlib import Path
+import re
 from transformers import AutoModel, PreTrainedModel, PretrainedConfig
-from typing import List, Optional, Type, Union
+from typing import List, Optional, Type, TypeVar, Union
+
+_T = TypeVar('_T', bound=PreTrainedModel)
+
+BaseModelType = Union[str, Path, PretrainedConfig, _T]
+BaseModelClassType = Union[str, Type[_T]]
 
 class DbtkModel(PreTrainedModel, L.LightningModule):
     """
@@ -17,8 +23,8 @@ class DbtkModel(PreTrainedModel, L.LightningModule):
     )
 
     class CustomConfig(PretrainedConfig):
-        base: Optional[Union[str, Path, PretrainedConfig, PreTrainedModel]] = None
-        base_class: Optional[str, Type[PreTrainedModel]] = None
+        base: Optional[BaseModelType[T]] = None
+        base_class: Optional[BaseModelClassType[T]] = None
 
     class CustomModel(DbtkModel):
         config_class = CustomConfig
@@ -51,15 +57,9 @@ class DbtkModel(PreTrainedModel, L.LightningModule):
         config_key = f"{model_key}"
         class_key = f"{model_key}_class"
 
-        # Ensure model key correctly exists in the config
-        if not hasattr(self.config, config_key):
-            raise ValueError(f"Configuration is missing {config_key}")
-        if not hasattr(self.config, class_key):
-            raise ValueError(f"Configuration is missing {class_key}")
-
         # Extract sub model information
-        model_config: Optional[Union[str, Path, PretrainedConfig, PreTrainedModel]] = getattr(self.config, config_key)
-        model_class: Optional[Union[str, Type[PreTrainedModel]]] = getattr(self.config, class_key)
+        model_config: Optional[BaseModelType] = getattr(self.config, config_key, None)
+        model_class: Optional[BaseModelClassType] = getattr(self.config, class_key, None)
         model_instance: Optional[PreTrainedModel] = None
 
         # Load model class if provided
@@ -95,7 +95,11 @@ class DbtkModel(PreTrainedModel, L.LightningModule):
         elif isinstance(model_config, (str, Path)):
             if model_class is None:
                 model_class = AutoModel
-            model_instance = model_class.from_pretrained(model_config)
+            if match := re.match(r"(.+\/.+)\:(.+)", model_config):
+                repo, revision = match.groups()
+                model_instance = model_class.from_pretrained(repo, revision=revision)
+            else:
+                model_instance = model_class.from_pretrained(model_config)
 
         if model_instance is None:
             assert model_class is None and model_config is None, f"Failed to instantiate nested model: config: {model_config}, class: {model_class}"

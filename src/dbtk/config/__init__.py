@@ -1,8 +1,11 @@
 import importlib
+import json
 import os
+from pathlib import Path
 import re
 from transformers import PreTrainedModel
-from typing import Any, Dict, Set, List, Optional, Type
+from typing import Any, Dict, Set, List, Optional, Type, Union
+import yaml
 
 
 def import_class(class_path: str) -> type:
@@ -315,3 +318,34 @@ def parse(config: Any) -> Any:
         TypeError: If configuration is invalid
     """
     return ConfigurationManager().parse(config)
+
+
+def merge(config: dict, other: dict):
+    """
+    Recursively merge dictionaries
+    """
+    for key, value in other.items():
+        if isinstance(value, dict):
+            if key not in config:
+                config[key] = {}
+            merge(config[key], value)
+        else:
+            config[key] = value
+
+
+def load(*configs: Union[str, Path]):
+    merged_config = {}
+    for config in configs:
+        if isinstance(config, str):
+            config = Path(config)
+        if not config.exists():
+            raise FileNotFoundError(f"Config file {config} does not exist")
+        with open(config, 'r') as f:
+            if config.suffix == ".json":
+                config = json.load(f)
+            elif config.suffix in (".yaml", ".yml"):
+                config = yaml.safe_load(f)
+            else:
+                raise ValueError(f"Unsupported config file format: {config.suffix}")
+            merge(merged_config, config)
+    return parse(merged_config)
