@@ -71,9 +71,9 @@ class DbtkModel(PreTrainedModel, L.LightningModule):
         # If the config is a dictionary, create a PretrainedConfig or model_class.config_class instance
         if isinstance(model_config, dict):
             if model_class is None:
-                model_config = PretrainedConfig.from_dict(model_config)
+                model_config = PretrainedConfig(**model_config)
             else:
-                model_config = model_class.config_class.from_dict(model_config)
+                model_config = model_class.config_class(**model_config)
 
         # If a model class was provided without a config, instantiate with default config
         if model_class is not None and model_config is None:
