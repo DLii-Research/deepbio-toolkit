@@ -74,8 +74,6 @@ class ConfigCommand(CliSubCommand):
         # Generate the default config
         model_config = model_cls.config_class()
 
-        print("The model config", model_config)
-
         # Fill in any sub-model configs
         for sub_model in model_cls.sub_models:
             sub_model_class = getattr(model_config, f"{sub_model}_class", None)
