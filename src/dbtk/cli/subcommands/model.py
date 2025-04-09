@@ -156,7 +156,7 @@ class FitCommand(CliSubCommand):
         last_ckpt = args.checkpoint_dir / 'last.ckpt'
         if last_ckpt.exists():
             try:
-                checkpoint = torch.load(last_ckpt)
+                checkpoint = torch.load(last_ckpt, map_location=torch.device('cpu'))
                 if 'config' in checkpoint:
                     merged_config = checkpoint['config']
                     print(f"Loaded config from checkpoint: {last_ckpt}")
@@ -280,7 +280,7 @@ class ExportCommand(CliSubCommand):
             return 1
 
         # Load checkpoint and config
-        checkpoint = torch.load(args.checkpoint)
+        checkpoint = torch.load(args.checkpoint, map_location=torch.device('cpu'))
         if 'config' not in checkpoint:
             print("Error: No configuration found in checkpoint", file=sys.stderr)
             return 1
